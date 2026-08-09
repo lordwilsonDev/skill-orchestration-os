@@ -1,6 +1,6 @@
 from pathlib import Path
 import sys, os
-root = Path.home()/'.hermes'/'skills'/'skill-orchestration-os'
+root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root))
 import importlib.util
 spec = importlib.util.spec_from_file_location('bootstrap', str(root/'bootstrap.py'))

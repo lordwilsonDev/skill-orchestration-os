@@ -4,7 +4,7 @@ from typing import Any, Dict
 
 class AuditLogger:
     def __init__(self, log_dir=None):
-        self.log_dir = Path(log_dir or Path.home() / ".hermes" / "skills" / "skill-orchestration-os" / "logs")
+        self.log_dir = Path(log_dir or Path(__file__).resolve().parent.parent / "logs")
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
     def log(self, skill: str, status: str, args: Dict, output):

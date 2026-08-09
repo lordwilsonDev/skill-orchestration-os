@@ -126,7 +126,7 @@ from pathlib import Path
 
 class AuditLogger:
     def __init__(self, log_dir=None):
-        self.log_dir = Path(log_dir or Path.home() / ".hermes" / "skills" / "skill-orchestration-os" / "logs")
+        self.log_dir = Path(log_dir or Path(__file__).resolve().parent.parent / "logs")
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
     def log(self, skill: str, status: str, args: Dict, output):
@@ -186,7 +186,7 @@ class MetaLearner:
 cli = '''#!/usr/bin/env python3
 import sys
 from pathlib import Path
-sys.path.insert(0, str(Path.home() / ".hermes" / "skills" / "skill-orchestration-os"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from registry.contracts import SkillRegistry, SkillContract
 from orchestrator import Orchestrator

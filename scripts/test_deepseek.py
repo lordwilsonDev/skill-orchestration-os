@@ -1,15 +1,17 @@
 import sys, os, json
 from pathlib import Path
-root = Path.home()/'.hermes'/'skills'/'skill-orchestration-os'
+root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root))
 
-# Load key from Hermes env without exposing it
-env_path = Path.home()/'.hermes'/'.env'
-deepseek_key = None
-for line in env_path.read_text().splitlines():
-    if line.startswith('DEEPSEEK_API_KEY='):
-        deepseek_key = line.split('=', 1)[1].strip()
-        break
+# Load key from the environment, falling back to the Hermes .env (if
+# present) without exposing it. Env-first so CI runs skip cleanly.
+env_path = Path(os.environ.get('HERMES_ENV_FILE', str(Path.home()/'.hermes'/'.env')))
+deepseek_key = os.environ.get('DEEPSEEK_API_KEY')
+if not deepseek_key and env_path.exists():
+    for line in env_path.read_text().splitlines():
+        if line.startswith('DEEPSEEK_API_KEY='):
+            deepseek_key = line.split('=', 1)[1].strip()
+            break
 
 from registry.contracts import SkillRegistry, SkillContract
 from orchestrator import Orchestrator

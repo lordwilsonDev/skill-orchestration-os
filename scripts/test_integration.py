@@ -1,6 +1,6 @@
 from pathlib import Path
 import sys, os
-root = Path.home()/'.hermes'/'skills'/'skill-orchestration-os'
+root = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(root))
 os.environ['N8N_API_KEY'] = open(root/'.env').read().split('N8N_API_KEY="')[1].split('"')[0] if (root/'.env').exists() else ''
 import importlib.util

@@ -1,7 +1,7 @@
 from pathlib import Path
 from typing import Dict, List, Any
 
-APPROVAL_PATH = Path.home() / ".hermes" / "skills" / "skill-orchestration-os" / "logs" / "approvals.jsonl"
+APPROVAL_PATH = Path(__file__).resolve().parent.parent / "logs" / "approvals.jsonl"
 
 
 class ApprovalGate:

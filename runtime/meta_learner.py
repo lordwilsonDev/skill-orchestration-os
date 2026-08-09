@@ -2,7 +2,7 @@ from typing import List, Dict, Optional
 from collections import Counter
 from pathlib import Path
 
-HISTORY_PATH = Path.home() / ".hermes" / "skills" / "skill-orchestration-os" / "logs" / "meta_history.jsonl"
+HISTORY_PATH = Path(__file__).resolve().parent.parent / "logs" / "meta_history.jsonl"
 
 class MetaLearner:
     def __init__(self, path=None):
