@@ -170,7 +170,9 @@ def dispatch(entry: dict, task: str, dry_run: bool) -> tuple[int, str]:
 
 def append_audit(record: dict, audit_path: Path | None = None) -> None:
     record["ts"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
-    with open(audit_path or AUDIT_PATH, "a", encoding="utf-8") as fh:
+    path = audit_path or AUDIT_PATH
+    path.parent.mkdir(parents=True, exist_ok=True)  # fresh checkouts have no logs/
+    with open(path, "a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 

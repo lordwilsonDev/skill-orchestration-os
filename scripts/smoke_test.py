@@ -121,7 +121,9 @@ def test_route_executor_dag_step():
     from runtime.domain_router import DomainRouter, REGISTRY_PATH
     table = json.loads(Path(REGISTRY_PATH).read_text(encoding="utf-8"))
     assert table["count"] > 0, "canonical domains.json is empty — build it first"
-    skill_id = next(e["skill_id"] for e in table["skills"] if Path(e["dir"]).exists())
+    # First table entry, unconditionally: dirs are absolute ~/.hermes paths
+    # that don't exist on a clean runner — dry-run routing never touches them.
+    skill_id = table["skills"][0]["skill_id"]
 
     with tempfile.TemporaryDirectory(prefix="route-smoke-") as tmp:
         router = DomainRouter(audit_path=Path(tmp) / "route_audit.jsonl")
@@ -206,7 +208,9 @@ def test_route_cli_dry_run():
     from runtime.domain_router import REGISTRY_PATH
     table = json.loads(Path(REGISTRY_PATH).read_text(encoding="utf-8"))
     assert table["count"] > 0, "canonical domains.json is empty — build it first"
-    skill_id = next(e["skill_id"] for e in table["skills"] if Path(e["dir"]).exists())
+    # First table entry, unconditionally: dirs are absolute ~/.hermes paths
+    # that don't exist on a clean runner — dry-run routing never touches them.
+    skill_id = table["skills"][0]["skill_id"]
     proc = subprocess.run(
         [sys.executable, "cli.py", "route", "--domain", skill_id, "--dry-run", "smoke task"],
         cwd=str(Path(__file__).resolve().parent.parent),
