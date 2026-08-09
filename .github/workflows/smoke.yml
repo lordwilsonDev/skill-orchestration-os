@@ -21,7 +21,7 @@ on:
 
 jobs:
   smoke:
-    name: zero-spend smoke suite (12 tests)
+    name: zero-spend smoke suite (13 tests)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,7 +30,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Smoke suite (run once, assert 12/12)
+      - name: Smoke suite (run once, assert 13/13)
         run: |
           python scripts/smoke_test.py 2>&1 | tee /tmp/smoke.log
-          grep -q '12/12 passed' /tmp/smoke.log
+          grep -q '13/13 passed' /tmp/smoke.log

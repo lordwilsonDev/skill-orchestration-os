@@ -222,6 +222,61 @@ def test_route_cli_dry_run():
     assert "dispatched:" not in proc.stdout   # dry-run prints no dispatch summary
 
 
+def test_route_stubbed_dispatch():
+    """Close the last unprovable box: a REAL subprocess dispatch through the
+    canonical dispatch() — with a stub `claude` binary emitting the JSON
+    envelope claude -p --output-format json produces — runs green, writes a
+    real audit.jsonl line, and records nonzero exits faithfully. Zero spend:
+    the stub replaces the binary; nothing is invoked remotely, and no
+    ~/.hermes skill dirs are touched (temp registry + temp cwd)."""
+    import subprocess, tempfile, os
+    from runtime import domain_router as dr
+
+    with tempfile.TemporaryDirectory(prefix="dispatch-stub-") as tmp:
+        tmp = Path(tmp)
+        stub_ok = tmp / "claude-ok"
+        stub_ok.write_text(
+            "#!/bin/sh\n"
+            "echo '{\"result\": \"stubbed claude completed the task\"}'\n"
+            "exit 0\n"
+        )
+        stub_ok.chmod(0o755)
+        stub_fail = tmp / "claude-fail"
+        stub_fail.write_text("#!/bin/sh\necho 'boom' >&2\nexit 1\n")
+        stub_fail.chmod(0o755)
+
+        reg = tmp / "registry.json"
+        reg.write_text(json.dumps({
+            "count": 1, "containers": ["stub"],
+            "skills": [{"skill_id": "stub/skill", "container": "stub",
+                        "description": "stub", "dir": str(tmp)}],
+        }))
+
+        saved = dr.CLAUDE_BIN
+        try:
+            # Happy path: fake claude succeeds -> exit 0, summary parsed, audit line written.
+            dr.CLAUDE_BIN = str(stub_ok)
+            router = dr.DomainRouter(registry_path=reg, audit_path=tmp / "audit.jsonl")
+            record = router.route("do the thing", dry_run=False, domain="stub/skill")
+            assert record["exit_code"] == 0
+            assert "stubbed claude completed the task" in record["result_summary"]
+            lines = (tmp / "audit.jsonl").read_text().strip().splitlines()
+            assert len(lines) == 1
+            assert json.loads(lines[0])["exit_code"] == 0
+            assert json.loads(lines[0])["skill_id"] == "stub/skill"
+
+            # Failure path: fake claude exits 1 -> the router records it, not masks it.
+            dr.CLAUDE_BIN = str(stub_fail)
+            rec2 = dr.DomainRouter(registry_path=reg, audit_path=tmp / "audit.jsonl").route(
+                "fail task", dry_run=False, domain="stub/skill")
+            assert rec2["exit_code"] == 1
+            lines2 = (tmp / "audit.jsonl").read_text().strip().splitlines()
+            assert len(lines2) == 2
+            assert json.loads(lines2[1])["exit_code"] == 1
+        finally:
+            dr.CLAUDE_BIN = saved
+
+
 if __name__ == "__main__":
     tests = [
         test_registry,
@@ -236,6 +291,7 @@ if __name__ == "__main__":
         test_route_executor_dag_step,
         test_route_rejects_unknown_domain,
         test_route_cli_dry_run,
+        test_route_stubbed_dispatch,
     ]
     passed = 0
     for test in tests:
