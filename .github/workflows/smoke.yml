@@ -1,0 +1,36 @@
+name: smoke
+
+# Zero-spend smoke suite for skill-orchestration-os (12 tests: registry,
+# planner incl. route-aware prompt + wrapped-steps normalization, executor
+# incl. the route DAG skill + unknown-domain rejection, meta-learner, audit,
+# and the skill-os route --dry-run CLI).
+#
+# Zero-spend by design: the suite uses --domain (no DeepSeek classification)
+# and dry-run (no subagent dispatch). It is stdlib-only — no dependencies to
+# install. IMPORTANT: do NOT add API-key secrets to this repo. The suite is
+# only guaranteed zero-spend because the runner environment carries no paid
+# credentials (test_deepseek_plan would make a real call if DEEPSEEK_API_KEY
+# were present).
+
+on:
+  push:
+    branches: [main]
+  schedule:
+    - cron: "30 6 * * *"   # daily 06:30 UTC
+  workflow_dispatch:
+
+jobs:
+  smoke:
+    name: zero-spend smoke suite (12 tests)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Smoke suite (run once, assert 12/12)
+        run: |
+          python scripts/smoke_test.py 2>&1 | tee /tmp/smoke.log
+          grep -q '12/12 passed' /tmp/smoke.log
