@@ -229,7 +229,7 @@ def test_route_stubbed_dispatch():
     real audit.jsonl line, and records nonzero exits faithfully. Zero spend:
     the stub replaces the binary; nothing is invoked remotely, and no
     ~/.hermes skill dirs are touched (temp registry + temp cwd)."""
-    import subprocess, tempfile, os
+    import tempfile
     from runtime import domain_router as dr
 
     with tempfile.TemporaryDirectory(prefix="dispatch-stub-") as tmp:
