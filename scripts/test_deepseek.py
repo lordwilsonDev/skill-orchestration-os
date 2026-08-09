@@ -13,8 +13,8 @@ if not deepseek_key and env_path.exists():
             deepseek_key = line.split('=', 1)[1].strip()
             break
 
-from registry.contracts import SkillRegistry, SkillContract
-from orchestrator import Orchestrator
+from runtime.registry.contracts import SkillRegistry, SkillContract
+from runtime.orchestrator import Orchestrator
 
 registry = SkillRegistry()
 registry.register(SkillContract(name='echo', inputs=['message'], outputs=['text'], side_effects=[]))

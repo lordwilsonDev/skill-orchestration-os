@@ -123,10 +123,11 @@ class Executor:
 
 audit = '''import json, datetime
 from pathlib import Path
+from typing import Dict
 
 class AuditLogger:
     def __init__(self, log_dir=None):
-        self.log_dir = Path(log_dir or Path(__file__).resolve().parent.parent / "logs")
+        self.log_dir = Path(log_dir or Path(__file__).resolve().parent / "logs")
         self.log_dir.mkdir(parents=True, exist_ok=True)
 
     def log(self, skill: str, status: str, args: Dict, output):
