@@ -1,6 +1,6 @@
 name: smoke
 
-# Zero-spend smoke suite for skill-orchestration-os (26 tests: registry,
+# Zero-spend smoke suite for skill-orchestration-os (27 tests: registry,
 # planner incl. route-aware prompt + wrapped-steps normalization + replan,
 # executor incl. the route DAG skill + unknown-domain rejection + per-step
 # verification, meta-learner, audit, the skill-os route --dry-run CLI +
@@ -9,10 +9,15 @@ name: smoke
 # replay-consumer gate leg (malformed stream -> non-zero exit, absent stream
 # -> exit 0, REGRESSED flip through the real consumer), the replay-events CLI
 # subcommand (same contract via `skill-os replay-events` + auto-bound git
-# head), vault-check-first routability, canonical-vs-shim registry sync
-# guard, and sovereign-verification routability). Five tests skip visibly in
-# CI when their sibling trees aren't checked out (~/.hermes skill tree,
-# domain-router shim) — they run at full strength locally.
+# head), vendored-consumer parity (scripts/vendored/ stays byte-identical to
+# the canonical sibling — the CI fallback), vault-check-first routability,
+# canonical-vs-shim registry sync guard, and sovereign-verification
+# routability). Two tests skip visibly in CI when their sibling trees aren't
+# checked out (~/.hermes skill tree, domain-router shim) — they run at full
+# strength locally. The replay legs run EVERYWHERE: cli.CONSUMER_PATH
+# resolves the canonical sibling locally and the vendored copy in CI, so the
+# mutation surface is identical on both and cmd_replay_events is
+# mutation-covered in CI like local.
 #
 # Zero-spend by design: the suite uses --domain (no DeepSeek classification)
 # and dry-run (no subagent dispatch). It is stdlib-only — no dependencies to
@@ -36,7 +41,7 @@ on:
 
 jobs:
   smoke:
-    name: zero-spend smoke suite (26 tests)
+    name: zero-spend smoke suite (27 tests)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -45,10 +50,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Smoke suite (run once, assert 26/26)
+      - name: Smoke suite (run once, assert 27/27)
         run: |
           python scripts/smoke_test.py 2>&1 | tee /tmp/smoke.log
-          grep -q '26/26 passed' /tmp/smoke.log
+          grep -q '27/27 passed' /tmp/smoke.log
 
       - name: Mutation floor (T5 gate — fresh mutmut run >= 50%)
         run: |

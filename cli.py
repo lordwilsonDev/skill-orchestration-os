@@ -28,11 +28,18 @@ from runtime.audit import AuditLogger
 from runtime.meta_learner import MetaLearner
 from runtime.domain_router import DomainRouter
 
-# The replay consumer lives in the sovereign-verification skill tree (a
-# sibling that CI does not check out). Loaded lazily so the rest of the CLI
-# works without it; when a replay is actually requested and the tree is
-# absent, the CLI fails loud rather than pretending to replay.
-CONSUMER_PATH = Path.home() / ".hermes" / "skills" / "sovereign-verification" / "scripts" / "replay_feedback_events.py"
+# The replay consumer lives canonically in the sovereign-verification skill
+# tree (a sibling CI does not check out). When that tree is absent (CI),
+# fall back to the vendored copy in this repo (scripts/vendored/), which a
+# parity guard keeps byte-identical to the canonical original. Resolving
+# sibling-first keeps local runs against the canonical, mutation-tested
+# consumer; the vendored fallback makes the replay legs RUN in CI instead of
+# skipping — so the mutation surface is identical everywhere. Loaded lazily
+# so the rest of the CLI works without it; a broken/absent consumer fails
+# loud rather than pretending to replay.
+_SIBLING_CONSUMER = Path.home() / ".hermes" / "skills" / "sovereign-verification" / "scripts" / "replay_feedback_events.py"
+_VENDORED_CONSUMER = Path(__file__).resolve().parent / "scripts" / "vendored" / "replay_feedback_events.py"
+CONSUMER_PATH = _SIBLING_CONSUMER if _SIBLING_CONSUMER.exists() else _VENDORED_CONSUMER
 
 
 def _default_git_head() -> str:

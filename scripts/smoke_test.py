@@ -662,20 +662,19 @@ def test_replay_consumer_wired():
     ledger with the REGRESSED flip (previously-VERIFIED claim contradicted by
     reality). Hermetic and zero-spend — temp fixtures, no network, no keys.
 
-    The consumer lives in the sovereign-verification skill tree
-    (~/.hermes/skills/sovereign-verification), which CI does not check out;
-    there the leg skips with a visible reason and runs at full strength
-    locally — same doctrine as the vault-check-first/sovereign-verification
-    routability tests."""
+    The consumer resolves through cli.CONSUMER_PATH: the canonical sibling
+    (~/.hermes/skills/sovereign-verification) locally, the vendored copy in
+    this repo in CI — so the leg runs at full strength EVERYWHERE, and CI's
+    mutation run covers cmd_replay_events like local does."""
     import importlib.util
     import subprocess
     import tempfile
 
-    consumer_path = Path.home() / ".hermes" / "skills" / "sovereign-verification" / "scripts" / "replay_feedback_events.py"
-    if not consumer_path.exists():
-        raise _Skip(
-            "sovereign-verification skill tree not in this checkout — the "
-            "replay gate leg runs locally where the consumer lives")
+    import cli
+
+    consumer_path = cli.CONSUMER_PATH
+    assert consumer_path.exists(), (
+        f"replay consumer missing at {consumer_path} — vendored copy absent")
     spec = importlib.util.spec_from_file_location("replay_feedback_events", consumer_path)
     consumer = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(consumer)
@@ -743,18 +742,20 @@ def test_replay_events_cli():
     the CLI — no manual consumer invocation. Absent stream -> exit 0
     (nothing to replay); malformed stream -> non-zero with nothing ingested
     (fail loud); well-formed event -> exit 0 with the REGRESSED flip and the
-    auto-detected git head bound to the evidence; a missing consumer tree ->
-    fail loud with a clear error (the CI path). Hermetic temp fixtures;
-    zero spend."""
+    auto-detected git head bound to the evidence; a missing consumer ->
+    fail loud with a clear error. Hermetic temp fixtures; zero spend.
+
+    The consumer resolves through cli.CONSUMER_PATH (sibling locally,
+    vendored in CI), so this leg runs everywhere — same mutation surface."""
     import subprocess
     import tempfile
 
     cli_py = Path(__file__).resolve().parent.parent / "cli.py"
-    consumer_path = Path.home() / ".hermes" / "skills" / "sovereign-verification" / "scripts" / "replay_feedback_events.py"
-    if not consumer_path.exists():
-        raise _Skip(
-            "sovereign-verification skill tree not in this checkout — the "
-            "replay CLI leg runs locally where the consumer lives")
+    import cli
+
+    consumer_path = cli.CONSUMER_PATH
+    assert consumer_path.exists(), (
+        f"replay consumer missing at {consumer_path} — vendored copy absent")
 
     with tempfile.TemporaryDirectory(prefix="replay-cli-") as tmp:
         tmp = Path(tmp)
@@ -841,6 +842,23 @@ def test_replay_events_cli():
             cli.CONSUMER_PATH = saved
 
 
+def test_vendored_consumer_parity():
+    """The vendored replay consumer (scripts/vendored/, the CI fallback) must
+    stay byte-identical to the canonical original in the sovereign-verification
+    skill tree — the d06 parity doctrine for the replay gate leg. Locally the
+    sibling exists, so drift fails this test loudly; in CI there is no sibling,
+    so the leg asserts the vendored copy is present (the wired tests already
+    prove it runs). Zero spend."""
+    vendored = Path(__file__).resolve().parent / "vendored" / "replay_feedback_events.py"
+    assert vendored.exists(), f"vendored consumer missing: {vendored}"
+    sibling = Path.home() / ".hermes" / "skills" / "sovereign-verification" / "scripts" / "replay_feedback_events.py"
+    if sibling.exists():
+        assert vendored.read_bytes() == sibling.read_bytes(), (
+            "vendored replay consumer drifted from the canonical sibling — "
+            "re-copy: cp ~/.hermes/skills/sovereign-verification/scripts/"
+            "replay_feedback_events.py scripts/vendored/")
+
+
 try:
     import pytest  # present under mutmut's pytest runner; absent in zero-dep use
     _PYTEST_SKIP_EXC = pytest.skip.Exception
@@ -890,6 +908,7 @@ if __name__ == "__main__":
         test_route_dispatch_failure_emits_feedback_event,
         test_replay_consumer_wired,
         test_replay_events_cli,
+        test_vendored_consumer_parity,
     ]
     passed = 0
     skipped = 0
