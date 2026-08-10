@@ -110,6 +110,13 @@ _register_tool(
     outputs=["deleted"],
     side_effects=["network", "write", "destructive"],
 )
+_register_tool(
+    name="ghl_demo_textback",
+    description="Live sales-demo: instant missed-call text-back to a prospect's phone (dry-run unless confirm:true; consented use only)",
+    inputs=["phone", "name?", "businessName?", "message?", "confirm?"],
+    outputs=["sent_to", "message_id"],
+    side_effects=["network", "write"],
+)
 
 # Agent-Reach tools
 _register_tool(

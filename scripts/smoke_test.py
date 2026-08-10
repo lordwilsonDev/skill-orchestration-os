@@ -277,6 +277,34 @@ def test_route_stubbed_dispatch():
             dr.CLAUDE_BIN = saved
 
 
+def test_vault_check_first_routable():
+    """vault-check-first must be registered in the canonical registry with a
+    usable description, and the CLI must dry-run-dispatch it zero-spend.
+    Guards the 2026-08-10 routing: a skill that lives in ~/.agents/skills but
+    is missing from the hermes tree (or dropped from domains.json) is not
+    dispatchable by the orchestrator -- this test fails loudly instead."""
+    import subprocess
+
+    from runtime.domain_router import REGISTRY_PATH
+    table = json.loads(Path(REGISTRY_PATH).read_text(encoding="utf-8"))
+    entries = [e for e in table["skills"] if e["skill_id"] == "vault-check-first"]
+    assert entries, "vault-check-first missing from domains.json — rebuild with --rebuild"
+    entry = entries[0]
+    assert entry["container"] == "vault-check-first", entry
+    assert len(entry["description"]) > 40, f"description too thin: {entry['description']!r}"
+    assert Path(entry["skill_md"]).exists(), f"SKILL.md missing: {entry['skill_md']}"
+    # Zero-spend dispatch proof: dry-run through the real CLI.
+    proc = subprocess.run(
+        [sys.executable, "cli.py", "route", "--domain", "vault-check-first",
+         "--dry-run", "check the vault before client onboarding work"],
+        cwd=str(Path(__file__).resolve().parent.parent),
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "vault-check-first" in proc.stdout
+    assert "dispatched:" not in proc.stdout  # dry-run must not execute
+
+
 def test_registry_copies_in_sync():
     """Canonical domains.json (skill-orchestration-os) and the domain-router
     shim copy must not drift: same count, same skill_id list, same container
@@ -313,6 +341,7 @@ if __name__ == "__main__":
         test_route_rejects_unknown_domain,
         test_route_cli_dry_run,
         test_route_stubbed_dispatch,
+        test_vault_check_first_routable,
         test_registry_copies_in_sync,
     ]
     passed = 0
