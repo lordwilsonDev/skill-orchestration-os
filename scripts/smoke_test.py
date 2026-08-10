@@ -738,6 +738,91 @@ def test_replay_consumer_wired():
         assert again["ingested"] == 0, again
 
 
+def test_replay_events_cli():
+    """`skill-os replay-events` flows TASK_FAILED events into the ledger from
+    the CLI — no manual consumer invocation. Absent stream -> exit 0
+    (nothing to replay); malformed stream -> non-zero with nothing ingested
+    (fail loud); well-formed event -> exit 0 with the REGRESSED flip and the
+    auto-detected git head bound to the evidence; a missing consumer tree ->
+    fail loud with a clear error (the CI path). Hermetic temp fixtures;
+    zero spend."""
+    import subprocess
+    import tempfile
+
+    cli_py = Path(__file__).resolve().parent.parent / "cli.py"
+    consumer_path = Path.home() / ".hermes" / "skills" / "sovereign-verification" / "scripts" / "replay_feedback_events.py"
+    if not consumer_path.exists():
+        raise _Skip(
+            "sovereign-verification skill tree not in this checkout — the "
+            "replay CLI leg runs locally where the consumer lives")
+
+    with tempfile.TemporaryDirectory(prefix="replay-cli-") as tmp:
+        tmp = Path(tmp)
+        events = tmp / "events.jsonl"
+        events.write_text(json.dumps({
+            "event": "TASK_FAILED", "version": "1.0", "task_id": "task_wired_cli",
+            "goal": "keep the pipeline green", "failed_step": "pipeline", "failed_index": 0,
+            "error": "verify contains 'green'", "attempt": 2, "max_attempts": 3,
+            "decision": "REPLAN", "dag": [{"skill": "pipeline", "args": {}}],
+            "revised_dag": [{"skill": "pipeline", "args": {"force": True}}],
+            "ts": "2026-08-10T17:00:00+00:00",
+        }) + "\n")
+        bad = tmp / "bad.jsonl"
+        bad.write_text('{"event": "TASK_FAILED", "ts": "x"}\nnot-json\n')
+
+        def run(*args):
+            return subprocess.run(
+                [sys.executable, str(cli_py), "replay-events", *args],
+                capture_output=True, text=True, timeout=60,
+            )
+
+        # Absent stream: exit 0 (a gate/CLI run before the first failure is
+        # not an incident).
+        p0 = run("--events", str(tmp / "missing.jsonl"), "--ledger-dir", str(tmp / "ledger0"))
+        assert p0.returncode == 0, p0.stdout + p0.stderr
+        assert "nothing to replay" in p0.stdout, p0.stdout
+
+        # Malformed stream: non-zero exit, nothing ingested.
+        p1 = run("--events", str(bad), "--ledger-dir", str(tmp / "ledger1"))
+        assert p1.returncode != 0, p1.stdout + p1.stderr
+        assert "FAILED" in p1.stdout, p1.stdout
+        assert not (tmp / "ledger1" / "claims.json").exists(), "malformed stream must ingest nothing"
+
+        # Well-formed event: exit 0, REGRESSED flip, auto-bound git head.
+        ledger = tmp / "ledger"
+        ledger.mkdir(parents=True, exist_ok=True)
+        (ledger / "claims.json").write_text(json.dumps({"claims": [{
+            "claim_id": "claim:ok:task:task_wired_cli", "subject": "task:task_wired_cli",
+            "text": '"task:task_wired_cli" completes without failure',
+            "verification_tier": "T3", "verdict": "VERIFIED",
+            "negative_evidence": [], "first_negative_evidence_at": None,
+            "last_negative_evidence_at": None,
+        }], "generated_at": None}, indent=2) + "\n")
+        p2 = run("--events", str(events), "--ledger-dir", str(ledger))
+        assert p2.returncode == 0, p2.stdout + p2.stderr
+        assert "1 ingested" in p2.stdout, p2.stdout
+        reg = json.loads((ledger / "claims.json").read_text())
+        claim = {c["claim_id"]: c for c in reg["claims"]}["claim:ok:task:task_wired_cli"]
+        assert claim["verdict"] == "REGRESSED", claim
+        expected_head = subprocess.run(
+            ["git", "rev-parse", "HEAD"], cwd=str(cli_py.parent),
+            capture_output=True, text=True, timeout=10,
+        ).stdout.strip()
+        art = json.loads(list((ledger / "evidence" / "negative").glob("*.json"))[0].read_text())
+        assert art["git_head"] == expected_head, art  # evidence bound to repo identity
+
+        # Missing consumer tree (CI has no sovereign-verification sibling):
+        # fail loud with a clear error rather than pretending to replay.
+        import cli
+        saved = cli.CONSUMER_PATH
+        cli.CONSUMER_PATH = tmp / "no-such-consumer.py"
+        try:
+            rc = cli.cmd_replay_events(["--events", str(events), "--ledger-dir", str(tmp / "ledger2")])
+            assert rc != 0, rc
+        finally:
+            cli.CONSUMER_PATH = saved
+
+
 try:
     import pytest  # present under mutmut's pytest runner; absent in zero-dep use
     _PYTEST_SKIP_EXC = pytest.skip.Exception
@@ -786,6 +871,7 @@ if __name__ == "__main__":
         test_orchestrator_replan_local_fallback,
         test_route_dispatch_failure_emits_feedback_event,
         test_replay_consumer_wired,
+        test_replay_events_cli,
     ]
     passed = 0
     skipped = 0

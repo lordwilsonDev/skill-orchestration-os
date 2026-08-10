@@ -1,17 +1,18 @@
 name: smoke
 
-# Zero-spend smoke suite for skill-orchestration-os (25 tests: registry,
+# Zero-spend smoke suite for skill-orchestration-os (26 tests: registry,
 # planner incl. route-aware prompt + wrapped-steps normalization + replan,
 # executor incl. the route DAG skill + unknown-domain rejection + per-step
 # verification, meta-learner, audit, the skill-os route --dry-run CLI +
 # stubbed-dispatch, the reality feedback loop (09 -> 02 -> 04) with its
 # TASK_FAILED event contract, the dispatch-failure feedback link, the wired
 # replay-consumer gate leg (malformed stream -> non-zero exit, absent stream
-# -> exit 0, REGRESSED flip through the real consumer), vault-check-first
-# routability, canonical-vs-shim registry sync guard, and sovereign-verification
-# routability). Four tests skip visibly in CI when their sibling trees aren't
-# checked out (~/.hermes skill tree, domain-router shim) — they run at full
-# strength locally.
+# -> exit 0, REGRESSED flip through the real consumer), the replay-events CLI
+# subcommand (same contract via `skill-os replay-events` + auto-bound git
+# head), vault-check-first routability, canonical-vs-shim registry sync
+# guard, and sovereign-verification routability). Five tests skip visibly in
+# CI when their sibling trees aren't checked out (~/.hermes skill tree,
+# domain-router shim) — they run at full strength locally.
 #
 # Zero-spend by design: the suite uses --domain (no DeepSeek classification)
 # and dry-run (no subagent dispatch). It is stdlib-only — no dependencies to
@@ -35,7 +36,7 @@ on:
 
 jobs:
   smoke:
-    name: zero-spend smoke suite (25 tests)
+    name: zero-spend smoke suite (26 tests)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -44,10 +45,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Smoke suite (run once, assert 25/25)
+      - name: Smoke suite (run once, assert 26/26)
         run: |
           python scripts/smoke_test.py 2>&1 | tee /tmp/smoke.log
-          grep -q '25/25 passed' /tmp/smoke.log
+          grep -q '26/26 passed' /tmp/smoke.log
 
       - name: Mutation floor (T5 gate — fresh mutmut run >= 50%)
         run: |
