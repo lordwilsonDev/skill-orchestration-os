@@ -654,6 +654,90 @@ def test_route_dispatch_failure_emits_feedback_event():
             dr.CLAUDE_BIN = saved
 
 
+def test_replay_consumer_wired():
+    """The TASK_FAILED replay consumer is wired as a gate leg: a malformed
+    stream makes the real CLI exit NON-zero (never silently replay the clean
+    prefix), an absent stream exits 0 (nothing to replay is not an incident),
+    and a well-formed event flows through the real consumer into a temp
+    ledger with the REGRESSED flip (previously-VERIFIED claim contradicted by
+    reality). Hermetic and zero-spend — temp fixtures, no network, no keys.
+
+    The consumer lives in the sovereign-verification skill tree
+    (~/.hermes/skills/sovereign-verification), which CI does not check out;
+    there the leg skips with a visible reason and runs at full strength
+    locally — same doctrine as the vault-check-first/sovereign-verification
+    routability tests."""
+    import importlib.util
+    import subprocess
+    import tempfile
+
+    consumer_path = Path.home() / ".hermes" / "skills" / "sovereign-verification" / "scripts" / "replay_feedback_events.py"
+    if not consumer_path.exists():
+        raise _Skip(
+            "sovereign-verification skill tree not in this checkout — the "
+            "replay gate leg runs locally where the consumer lives")
+    spec = importlib.util.spec_from_file_location("replay_feedback_events", consumer_path)
+    consumer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(consumer)
+
+    with tempfile.TemporaryDirectory(prefix="replay-wired-") as tmp:
+        tmp = Path(tmp)
+        events = tmp / "events.jsonl"
+        events.write_text(json.dumps({
+            "event": "TASK_FAILED", "version": "1.0", "task_id": "task_wired1",
+            "goal": "keep the service up", "failed_step": "uptime", "failed_index": 0,
+            "error": "timeout", "attempt": 3, "max_attempts": 3, "decision": "BLOCK",
+            "dag": [], "revised_dag": None, "ts": "2026-08-10T16:00:00+00:00",
+        }) + "\n")
+        bad = tmp / "bad.jsonl"
+        bad.write_text('{"event": "TASK_FAILED", "ts": "x"}\nnot-json\n')
+
+        # Absent stream: exit 0 (a daily gate must not fail before the first
+        # failure is ever recorded).
+        proc0 = subprocess.run(
+            [sys.executable, str(consumer_path), "--events", str(tmp / "missing.jsonl"),
+             "--ledger-dir", str(tmp / "ledger_cli0")],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert proc0.returncode == 0, proc0.stdout + proc0.stderr
+        assert "nothing to replay" in proc0.stdout, proc0.stdout
+
+        # Malformed stream: the real CLI exits NON-zero — the gate leg fails
+        # loudly instead of silently replaying the clean prefix.
+        proc = subprocess.run(
+            [sys.executable, str(consumer_path), "--events", str(bad),
+             "--ledger-dir", str(tmp / "ledger_cli")],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert proc.returncode != 0, proc.stdout + proc.stderr
+        assert "FAILED" in proc.stdout, proc.stdout
+        assert "malformed event" in proc.stdout, proc.stdout
+        assert not (tmp / "ledger_cli" / "claims.json").exists(), \
+            "a malformed stream must ingest nothing"
+
+        # Well-formed event through the real consumer -> REGRESSED flip.
+        ledger = tmp / "ledger"
+        ledger.mkdir(parents=True, exist_ok=True)
+        (ledger / "claims.json").write_text(json.dumps({"claims": [{
+            "claim_id": "claim:ok:task:task_wired1", "subject": "task:task_wired1",
+            "text": '"task:task_wired1" completes without failure',
+            "verification_tier": "T3", "verdict": "VERIFIED",
+            "negative_evidence": [], "first_negative_evidence_at": None,
+            "last_negative_evidence_at": None,
+        }], "generated_at": None}, indent=2) + "\n")
+        ok = consumer.ingest(events, ledger, "wired-test")
+        assert ok["status"] == "ok" and ok["ingested"] == 1, ok
+        reg = json.loads((ledger / "claims.json").read_text())
+        claim = {c["claim_id"]: c for c in reg["claims"]}["claim:ok:task:task_wired1"]
+        assert claim["verdict"] == "REGRESSED", claim
+        assert claim["negative_evidence"], claim
+        assert claim["first_negative_evidence_at"] == "2026-08-10T16:00:00+00:00", claim
+
+        # Idempotent: replaying the same event ingests nothing new.
+        again = consumer.ingest(events, ledger, "wired-test")
+        assert again["ingested"] == 0, again
+
+
 try:
     import pytest  # present under mutmut's pytest runner; absent in zero-dep use
     _PYTEST_SKIP_EXC = pytest.skip.Exception
@@ -701,6 +785,7 @@ if __name__ == "__main__":
         test_feedback_event_contract_shape,
         test_orchestrator_replan_local_fallback,
         test_route_dispatch_failure_emits_feedback_event,
+        test_replay_consumer_wired,
     ]
     passed = 0
     skipped = 0
