@@ -1,9 +1,12 @@
 name: smoke
 
-# Zero-spend smoke suite for skill-orchestration-os (12 tests: registry,
+# Zero-spend smoke suite for skill-orchestration-os (15 tests: registry,
 # planner incl. route-aware prompt + wrapped-steps normalization, executor
 # incl. the route DAG skill + unknown-domain rejection, meta-learner, audit,
-# and the skill-os route --dry-run CLI).
+# the skill-os route --dry-run CLI + stubbed-dispatch, vault-check-first
+# routability, and the canonical-vs-shim registry sync guard). Two tests skip
+# visibly in CI when their sibling trees aren't checked out (~/.hermes skill
+# tree, domain-router shim) — they run at full strength locally.
 #
 # Zero-spend by design: the suite uses --domain (no DeepSeek classification)
 # and dry-run (no subagent dispatch). It is stdlib-only — no dependencies to
@@ -21,7 +24,7 @@ on:
 
 jobs:
   smoke:
-    name: zero-spend smoke suite (13 tests)
+    name: zero-spend smoke suite (15 tests)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,7 +33,7 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Smoke suite (run once, assert 13/13)
+      - name: Smoke suite (run once, assert 15/15)
         run: |
           python scripts/smoke_test.py 2>&1 | tee /tmp/smoke.log
-          grep -q '13/13 passed' /tmp/smoke.log
+          grep -q '15/15 passed' /tmp/smoke.log
