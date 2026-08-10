@@ -31,34 +31,87 @@ class Executor:
             self._meta = None
 
     def run(self, dag: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Backward-compatible entry point: execute the DAG, return the final
+        context (the {skill}_out output map). The reality loop uses
+        run_steps() instead, which exposes per-step results for verification."""
+        context: Dict[str, Any] = {}
+        for result in self.run_steps(dag):
+            context[f"{result['skill'].replace('-', '_')}_out"] = result["output"]
+        return context
+
+    def run_steps(self, dag: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        """Execute the DAG and return per-step results. Never raises: step
+        errors are captured per-step (same contract as run()).
+
+        Each result: {"skill", "args", "status": "success"|"error", "output",
+        "error"?}. The reality loop feeds these into verify_step() to decide
+        whether the DAG actually accomplished the task (exit 0 != task done)."""
         context: Dict[str, Any] = {}
         results = []
         for step in dag:
             skill = step.get("skill")
             args = step.get("args", {})
+            result = {"skill": skill, "args": args}
             try:
                 if self.gate and not self.gate.allow(skill, args):
                     output = {"error": "blocked by approval gate", "skill": skill}
+                    result["status"] = "success"
                 else:
                     output = self._run_skill(skill, args, context)
+                    result["status"] = "success"
+                result["output"] = output
                 context_key = f"{skill.replace('-', '_')}_out"
                 context[context_key] = output
-                results.append({"skill": skill, "status": "success"})
                 if self.audit:
                     self.audit.log(skill, "success", args, output)
             except Exception as e:
                 output = {"error": str(e)}
+                result["status"] = "error"
+                result["output"] = output
+                result["error"] = str(e)
                 context_key = f"{skill.replace('-', '_')}_out"
                 context[context_key] = output
-                results.append({"skill": skill, "status": "error"})
                 if self.audit:
                     self.audit.log(skill, "error", args, str(e))
+            results.append(result)
         if self._meta is not None:
             try:
                 self._meta.record(getattr(self, "_last_task", ""), dag, {"status": "ok", "result": context})
             except Exception:
                 pass
-        return context
+        return results
+
+    def verify_step(self, step: Dict[str, Any], result: Dict[str, Any]) -> tuple:
+        """Evaluate a step's verify criteria against its run result. Returns
+        (ok: bool, reason: str).
+
+        - No criteria: ok iff the step did not error (status error OR an
+          output dict carrying an "error" key).
+        - {"exit_zero": true}: ok iff output dict returncode == 0 (shell/python).
+        - {"contains": "text"}: ok iff str(output) contains the text.
+
+        This is the "exit 0 != task done" check: a step can complete without
+        error yet fail verification, which is what triggers replanning.
+        Note the intentional split with run_steps(): a gate-blocked step is
+        recorded as status "success" (run() back-compat) but its output
+        carries an "error" key, so verify_step flags it as a failure —
+        correct for the loop, harmless for run()."""
+        criteria = step.get("verify")
+        if not criteria:
+            if result["status"] == "error":
+                return False, result.get("error") or "step errored"
+            out = result["output"]
+            if isinstance(out, dict) and out.get("error"):
+                return False, str(out["error"])
+            return True, ""
+        if criteria.get("exit_zero") is True:
+            out = result["output"]
+            rc = out.get("returncode") if isinstance(out, dict) else None
+            return rc == 0, f"returncode={rc}"
+        if "contains" in criteria:
+            needle = str(criteria["contains"])
+            return needle in str(result["output"]), f"contains {needle!r}: {str(result['output'])[:60]!r}"
+        return True, ""
 
     def _run_skill(self, skill: str, args: Dict, context: Dict) -> Any:
         name = skill.replace("-", "_")

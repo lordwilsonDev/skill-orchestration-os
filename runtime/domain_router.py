@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from runtime.deepseek import deepseek_chat, strip_fences
+from runtime.reality_loop import FEEDBACK_EVENTS_PATH, append_feedback_event, build_failed_event
 
 HOME_DIR = Path(__file__).resolve().parent.parent
 REGISTRY_PATH = HOME_DIR / "domains.json"
@@ -190,9 +191,11 @@ class DomainRouter:
 
     def __init__(self, registry_path: Path | None = None,
                  audit_path: Path | None = None,
+                 events_path: Path | None = None,
                  api_key: str | None = None):
         self.registry_path = registry_path or REGISTRY_PATH
         self.audit_path = audit_path or AUDIT_PATH
+        self.events_path = events_path or FEEDBACK_EVENTS_PATH
         self.api_key = api_key if api_key is not None else os.environ.get("DEEPSEEK_API_KEY", "")
 
     def route(self, task: str, dry_run: bool = False,
@@ -230,6 +233,19 @@ class DomainRouter:
             "result_summary": summary,
         }
         append_audit(record, audit_path=self.audit_path)
+        if exit_code != 0:
+            # 09 -> router link: a failed dispatch is a TASK_FAILED event on
+            # the shared feedback ledger (no in-process retry — honest BLOCK,
+            # surfaced for upstream replanning/ledger replay). Contract is
+            # single-sourced via build_failed_event.
+            append_feedback_event(build_failed_event(
+                task_id=None, goal=task,
+                failed_step=f"route:{entry['skill_id']}",
+                failed_index=0, error=summary or f"dispatch exit {exit_code}",
+                attempt=1, max_attempts=1, decision="BLOCK",
+                dag=[{"skill": "route", "args": {"task": task, "domain": entry["skill_id"]}}],
+                revised_dag=None,
+            ), path=self.events_path)
         return record
 
 

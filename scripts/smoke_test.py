@@ -256,7 +256,8 @@ def test_route_stubbed_dispatch():
         try:
             # Happy path: fake claude succeeds -> exit 0, summary parsed, audit line written.
             dr.CLAUDE_BIN = str(stub_ok)
-            router = dr.DomainRouter(registry_path=reg, audit_path=tmp / "audit.jsonl")
+            router = dr.DomainRouter(registry_path=reg, audit_path=tmp / "audit.jsonl",
+                                     events_path=tmp / "feedback_events.jsonl")
             record = router.route("do the thing", dry_run=False, domain="stub/skill")
             assert record["exit_code"] == 0
             assert "stubbed claude completed the task" in record["result_summary"]
@@ -264,10 +265,13 @@ def test_route_stubbed_dispatch():
             assert len(lines) == 1
             assert json.loads(lines[0])["exit_code"] == 0
             assert json.loads(lines[0])["skill_id"] == "stub/skill"
+            # Success emits no feedback event.
+            assert not (tmp / "feedback_events.jsonl").exists()
 
             # Failure path: fake claude exits 1 -> the router records it, not masks it.
             dr.CLAUDE_BIN = str(stub_fail)
-            rec2 = dr.DomainRouter(registry_path=reg, audit_path=tmp / "audit.jsonl").route(
+            rec2 = dr.DomainRouter(registry_path=reg, audit_path=tmp / "audit.jsonl",
+                                   events_path=tmp / "feedback_events.jsonl").route(
                 "fail task", dry_run=False, domain="stub/skill")
             assert rec2["exit_code"] == 1
             lines2 = (tmp / "audit.jsonl").read_text().strip().splitlines()
@@ -411,6 +415,245 @@ def test_sovereign_verification_routable():
     assert "dispatched:" not in proc.stdout  # dry-run must not execute
 
 
+# ---------------------------------------------------------------------------
+# Reality feedback loop (09 -> 02 -> 04) — zero-spend: echo steps, temp
+# events paths, mocked planner transport. No API keys, no subagents.
+# ---------------------------------------------------------------------------
+
+def test_reality_loop_pass_no_events():
+    """A DAG that verifies green emits ZERO feedback events (the loop only
+    speaks on failure) and returns success with the final context."""
+    import tempfile
+    from runtime.reality_loop import RealityLoop
+
+    registry = SkillRegistry()
+    registry.register(SkillContract(name="echo", inputs=["message"], outputs=["text"], side_effects=[]))
+    orch = Orchestrator(registry)
+    executor = Executor(registry)
+    with tempfile.TemporaryDirectory(prefix="reality-pass-") as tmp:
+        loop = RealityLoop(orch, executor, events_path=Path(tmp) / "feedback_events.jsonl")
+        out = loop.run("say hi", [{"skill": "echo", "args": {"message": "hi"}}])
+        assert out["status"] == "success"
+        assert out["attempts"] == 1
+        assert out["context"]["echo_out"] == "hi"
+        assert out["events"] == []
+        assert not (Path(tmp) / "feedback_events.jsonl").exists()
+
+
+def test_reality_loop_failure_blocks_honestly():
+    """A failed step with no fallback and an empty replan -> honest BLOCK:
+    one TASK_FAILED event (decision BLOCK as executed, revised_dag None),
+    status blocked, nothing guessed."""
+    import tempfile
+    from runtime import orchestrator as orch_mod
+    from runtime.reality_loop import RealityLoop
+
+    registry = SkillRegistry()
+    registry.register(SkillContract(name="echo", inputs=["message"], outputs=["text"], side_effects=[]))
+    orch = Orchestrator(registry)
+    orch.deepseek_key = "TEST_KEY"  # would call DeepSeek — transport mocked below
+    executor = Executor(registry)
+
+    def _boom(*a, **k):
+        raise RuntimeError("transport down")
+
+    original = orch_mod.deepseek_chat
+    orch_mod.deepseek_chat = _boom
+    try:
+        with tempfile.TemporaryDirectory(prefix="reality-block-") as tmp:
+            loop = RealityLoop(orch, executor, events_path=Path(tmp) / "feedback_events.jsonl")
+            dag = [{"skill": "echo", "args": {"message": "wrong"}, "verify": {"contains": "right"}}]
+            out = loop.run("say right", dag)
+            assert out["status"] == "blocked"
+            assert out["attempts"] == 1
+            assert out["failure"]["step"] == "echo"
+            lines = (Path(tmp) / "feedback_events.jsonl").read_text().strip().splitlines()
+            assert len(lines) == 1
+            ev = json.loads(lines[0])
+            assert ev["event"] == "TASK_FAILED"
+            assert ev["decision"] == "BLOCK"
+            assert ev["revised_dag"] is None
+    finally:
+        orch_mod.deepseek_chat = original
+
+
+def test_reality_loop_fallback_recovers():
+    """A failed step WITH fallback_args -> deterministic FALLBACK decision
+    (planner never consulted — asserting that with a bombed replan), the step
+    retries with merged args and passes."""
+    import tempfile
+    from runtime.reality_loop import RealityLoop
+
+    registry = SkillRegistry()
+    registry.register(SkillContract(name="echo", inputs=["message"], outputs=["text"], side_effects=[]))
+    orch = Orchestrator(registry)
+
+    def _bomb(*a, **k):
+        raise AssertionError("FALLBACK must not consult the planner")
+
+    orch.replan = _bomb
+    executor = Executor(registry)
+    with tempfile.TemporaryDirectory(prefix="reality-fallback-") as tmp:
+        loop = RealityLoop(orch, executor, events_path=Path(tmp) / "feedback_events.jsonl")
+        dag = [{"skill": "echo", "args": {"message": "wrong"},
+                "fallback_args": {"message": "right"}, "verify": {"contains": "right"}}]
+        out = loop.run("say right", dag)
+        assert out["status"] == "success"
+        assert out["attempts"] == 2
+        assert out["context"]["echo_out"] == "right"
+        ev = json.loads((Path(tmp) / "feedback_events.jsonl").read_text().strip().splitlines()[0])
+        assert ev["decision"] == "FALLBACK"
+        assert ev["revised_dag"][0]["args"]["message"] == "right"
+
+
+def test_reality_loop_replan_recovers():
+    """A planner-revised DAG that fixes the failure -> success on attempt 2;
+    the TASK_FAILED event carries the revised_dag (graph-mutation evidence)."""
+    import tempfile
+    from runtime.reality_loop import RealityLoop
+
+    registry = SkillRegistry()
+    registry.register(SkillContract(name="echo", inputs=["message"], outputs=["text"], side_effects=[]))
+    orch = Orchestrator(registry)
+    orch.replan = lambda task, dag, failure: [
+        {"skill": "echo", "args": {"message": "right"}, "verify": {"contains": "right"}}
+    ]
+    executor = Executor(registry)
+    with tempfile.TemporaryDirectory(prefix="reality-replan-") as tmp:
+        loop = RealityLoop(orch, executor, events_path=Path(tmp) / "feedback_events.jsonl")
+        dag = [{"skill": "echo", "args": {"message": "wrong"}, "verify": {"contains": "right"}}]
+        out = loop.run("say right", dag)
+        assert out["status"] == "success"
+        assert out["attempts"] == 2
+        ev = json.loads((Path(tmp) / "feedback_events.jsonl").read_text().strip().splitlines()[0])
+        assert ev["decision"] == "REPLAN"
+        assert ev["revised_dag"][0]["args"]["message"] == "right"
+
+
+def test_reality_loop_bounded_attempts():
+    """Replans that keep returning still-failing DAGs are bounded by
+    max_attempts: attempts == max_attempts, final event decision BLOCK."""
+    import tempfile
+    from runtime.reality_loop import RealityLoop
+
+    registry = SkillRegistry()
+    registry.register(SkillContract(name="echo", inputs=["message"], outputs=["text"], side_effects=[]))
+    orch = Orchestrator(registry)
+    orch.replan = lambda task, dag, failure: [
+        {"skill": "echo", "args": {"message": "still wrong"}, "verify": {"contains": "right"}}
+    ]
+    executor = Executor(registry)
+    with tempfile.TemporaryDirectory(prefix="reality-bounded-") as tmp:
+        loop = RealityLoop(orch, executor, events_path=Path(tmp) / "feedback_events.jsonl", max_attempts=3)
+        dag = [{"skill": "echo", "args": {"message": "wrong"}, "verify": {"contains": "right"}}]
+        out = loop.run("say right", dag)
+        assert out["status"] == "blocked"
+        assert out["attempts"] == 3
+        events = [json.loads(l) for l in (Path(tmp) / "feedback_events.jsonl").read_text().strip().splitlines()]
+        assert [e["decision"] for e in events] == ["REPLAN", "REPLAN", "BLOCK"]
+        assert events[0]["attempt"] == 1
+        assert events[2]["attempt"] == 3
+
+
+def test_feedback_event_contract_shape():
+    """TASK_FAILED events carry the full contract: event, version, task_id,
+    goal, failed_step/index, error, attempt, max_attempts, decision, dag,
+    revised_dag (+ ts on write). The ledger can replay these without the
+    runtime."""
+    import tempfile
+    from runtime.reality_loop import build_failed_event, append_feedback_event
+
+    ev = build_failed_event(
+        task_id="t1", goal="g", failed_step="echo", failed_index=0, error="boom",
+        attempt=2, max_attempts=3, decision="REPLAN",
+        dag=[{"skill": "echo", "args": {}}], revised_dag=None,
+    )
+    required = {"event", "version", "task_id", "goal", "failed_step", "failed_index",
+                "error", "attempt", "max_attempts", "decision", "dag", "revised_dag"}
+    assert required <= set(ev)
+    assert ev["event"] == "TASK_FAILED"
+    assert ev["version"] == "1.0"
+    assert ev["dag"][0]["skill"] == "echo"
+    assert ev["revised_dag"] is None
+    with tempfile.TemporaryDirectory(prefix="evt-shape-") as tmp:
+        p = Path(tmp) / "events.jsonl"
+        append_feedback_event(ev, path=p)
+        line = json.loads(p.read_text().strip())
+        assert line["ts"]  # write-time stamp
+        assert line["decision"] == "REPLAN"
+
+
+def test_orchestrator_replan_local_fallback():
+    """replan() with the transport down falls back to the deterministic local
+    policy: fallback_args -> merged retry; no fallback_args -> honest []."""
+    from runtime import orchestrator as orch_mod
+
+    registry = SkillRegistry()
+    registry.register(SkillContract(name="echo", inputs=["message"], outputs=["text"], side_effects=[]))
+    orch = Orchestrator(registry)
+    orch.deepseek_key = "TEST_KEY"
+
+    def _boom(*a, **k):
+        raise RuntimeError("transport down")
+
+    original = orch_mod.deepseek_chat
+    orch_mod.deepseek_chat = _boom
+    try:
+        dag = [{"skill": "echo", "args": {"message": "a"}, "fallback_args": {"message": "b"}}]
+        revised = orch.replan("t", dag, {"step": dag[0], "index": 0, "error": "x"})
+        assert revised[0]["args"] == {"message": "b"}
+        assert "fallback_args" not in revised[0]  # one-shot fix
+        dag2 = [{"skill": "echo", "args": {"message": "a"}}]
+        assert orch.replan("t", dag2, {"step": dag2[0], "index": 0, "error": "x"}) == []
+    finally:
+        orch_mod.deepseek_chat = original
+
+
+def test_route_dispatch_failure_emits_feedback_event():
+    """A failed claude dispatch (exit != 0) appends a TASK_FAILED feedback
+    event alongside the audit line — the 09 -> router link. Success emits
+    none. Zero spend: stubbed claude binaries."""
+    import tempfile
+    from runtime import domain_router as dr
+
+    with tempfile.TemporaryDirectory(prefix="route-fb-") as tmp:
+        tmp = Path(tmp)
+        stub_fail = tmp / "claude-fail"
+        stub_fail.write_text("#!/bin/sh\necho 'nope' >&2\nexit 1\n")
+        stub_fail.chmod(0o755)
+        stub_ok = tmp / "claude-ok"
+        stub_ok.write_text("#!/bin/sh\necho '{\"result\": \"done\"}'\nexit 0\n")
+        stub_ok.chmod(0o755)
+        reg = tmp / "registry.json"
+        reg.write_text(json.dumps({
+            "count": 1, "containers": ["stub"],
+            "skills": [{"skill_id": "stub/skill", "container": "stub",
+                        "description": "stub", "dir": str(tmp)}],
+        }))
+        events = tmp / "feedback_events.jsonl"
+        saved = dr.CLAUDE_BIN
+        try:
+            # Failure path: exit 1 -> TASK_FAILED feedback event, honest BLOCK.
+            dr.CLAUDE_BIN = str(stub_fail)
+            router = dr.DomainRouter(registry_path=reg, audit_path=tmp / "audit.jsonl",
+                                     events_path=events)
+            rec = router.route("fail task", dry_run=False, domain="stub/skill")
+            assert rec["exit_code"] == 1
+            ev = json.loads(events.read_text().strip().splitlines()[0])
+            assert ev["event"] == "TASK_FAILED"
+            assert ev["decision"] == "BLOCK"
+            assert ev["failed_step"] == "route:stub/skill"
+            assert ev["revised_dag"] is None
+            # Success path: exit 0 -> no additional event.
+            dr.CLAUDE_BIN = str(stub_ok)
+            rec2 = dr.DomainRouter(registry_path=reg, audit_path=tmp / "audit.jsonl",
+                                   events_path=events).route("ok task", dry_run=False, domain="stub/skill")
+            assert rec2["exit_code"] == 0
+            assert len(events.read_text().strip().splitlines()) == 1
+        finally:
+            dr.CLAUDE_BIN = saved
+
+
 try:
     import pytest  # present under mutmut's pytest runner; absent in zero-dep use
     _PYTEST_SKIP_EXC = pytest.skip.Exception
@@ -450,6 +693,14 @@ if __name__ == "__main__":
         test_vault_check_first_routable,
         test_registry_copies_in_sync,
         test_sovereign_verification_routable,
+        test_reality_loop_pass_no_events,
+        test_reality_loop_failure_blocks_honestly,
+        test_reality_loop_fallback_recovers,
+        test_reality_loop_replan_recovers,
+        test_reality_loop_bounded_attempts,
+        test_feedback_event_contract_shape,
+        test_orchestrator_replan_local_fallback,
+        test_route_dispatch_failure_emits_feedback_event,
     ]
     passed = 0
     skipped = 0

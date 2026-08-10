@@ -3,14 +3,14 @@
     "project_id": "d1d1c5cc4863",
     "name": "skill-orchestration-os",
     "root": "/Users/lordwilson/.hermes/skills/skill-orchestration-os",
-    "discovered_at": "2026-08-10T14:26:54.717254+00:00"
+    "discovered_at": "2026-08-10T14:46:11.155653+00:00"
   },
   "BASELINE": {
     "project": {
       "project_id": "d1d1c5cc4863",
       "name": "skill-orchestration-os",
       "root": "/Users/lordwilson/.hermes/skills/skill-orchestration-os",
-      "discovered_at": "2026-08-10T14:26:54.717254+00:00"
+      "discovered_at": "2026-08-10T14:46:11.155653+00:00"
     },
     "tests": "n/a",
     "git": "n/a",
@@ -20,7 +20,7 @@
   "VERIFICATION": {
     "pytest": {
       "passed": true,
-      "summary": "16 passed, 2 warnings in 0.62s",
+      "summary": "24 passed, 2 warnings in 0.74s",
       "duration_s": 1
     },
     "coverage": {
@@ -50,15 +50,15 @@
   "EVIDENCE_INDEX": {
     "claims_verified": 1,
     "artifacts": [
-      "/Users/lordwilson/.hermes/skills/skill-orchestration-os/artifacts/hygiene/o01_orchestration_smoke_20260810T142656Z.json"
+      "/Users/lordwilson/.hermes/skills/skill-orchestration-os/artifacts/hygiene/o01_orchestration_smoke_20260810T144612Z.json"
     ],
-    "verified_at": "2026-08-10T14:26:56.917563+00:00",
+    "verified_at": "2026-08-10T14:46:13.681298+00:00",
     "member_results": [
       {
         "experiment": "o01_orchestration_smoke",
         "skill": "regression-hygiene",
         "verdict": "pass",
-        "artifact": "/Users/lordwilson/.hermes/skills/skill-orchestration-os/artifacts/hygiene/o01_orchestration_smoke_20260810T142656Z.json",
+        "artifact": "/Users/lordwilson/.hermes/skills/skill-orchestration-os/artifacts/hygiene/o01_orchestration_smoke_20260810T144612Z.json",
         "violations": []
       }
     ]
