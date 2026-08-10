@@ -844,19 +844,37 @@ def test_replay_events_cli():
 
 def test_vendored_consumer_parity():
     """The vendored replay consumer (scripts/vendored/, the CI fallback) must
-    stay byte-identical to the canonical original in the sovereign-verification
-    skill tree — the d06 parity doctrine for the replay gate leg. Locally the
-    sibling exists, so drift fails this test loudly; in CI there is no sibling,
-    so the leg asserts the vendored copy is present (the wired tests already
-    prove it runs). Zero spend."""
-    vendored = Path(__file__).resolve().parent / "vendored" / "replay_feedback_events.py"
+    stay in lockstep with the canonical original — the d06 parity doctrine for
+    the replay gate leg, extended to RUN in CI. Two guards:
+
+    1. REFERENCE_SHA256 (committed) — the vendored copy must hash to the
+       committed reference ALWAYS, including CI where no sibling exists. This
+       is what makes drift detectable on the runner, not just the developer's
+       machine: a stale or tampered vendored copy fails CI even though the
+       sibling is absent.
+    2. Byte-parity vs the canonical sibling — runs at full strength locally
+       where the sibling exists.
+
+    Zero spend."""
+    import hashlib
+    import cli
+
+    vendored = cli._VENDORED_CONSUMER  # lockstep with cli.py's resolution
     assert vendored.exists(), f"vendored consumer missing: {vendored}"
+    ref = Path(__file__).resolve().parent / "vendored" / "REFERENCE_SHA256.txt"
+    expected = ref.read_text(encoding="utf-8").strip()
+    actual = hashlib.sha256(vendored.read_bytes()).hexdigest()
+    assert actual == expected, (
+        f"vendored replay consumer drifted from REFERENCE_SHA256 — re-copy from "
+        f"the canonical sibling and bump the reference: "
+        f"cp ~/.hermes/skills/sovereign-verification/scripts/replay_feedback_events.py "
+        f"scripts/vendored/ && shasum -a 256 scripts/vendored/replay_feedback_events.py "
+        f"| awk '{'{print $1}'}' > scripts/vendored/REFERENCE_SHA256.txt")
     sibling = Path.home() / ".hermes" / "skills" / "sovereign-verification" / "scripts" / "replay_feedback_events.py"
     if sibling.exists():
         assert vendored.read_bytes() == sibling.read_bytes(), (
             "vendored replay consumer drifted from the canonical sibling — "
-            "re-copy: cp ~/.hermes/skills/sovereign-verification/scripts/"
-            "replay_feedback_events.py scripts/vendored/")
+            "re-copy and bump REFERENCE_SHA256")
 
 
 try:
