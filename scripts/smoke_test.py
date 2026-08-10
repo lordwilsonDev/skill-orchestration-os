@@ -293,6 +293,26 @@ def test_vault_check_first_routable():
     assert entry["container"] == "vault-check-first", entry
     assert len(entry["description"]) > 40, f"description too thin: {entry['description']!r}"
     assert Path(entry["skill_md"]).exists(), f"SKILL.md missing: {entry['skill_md']}"
+    # Parity: the hermes copy must not drift from the canonical ~/.agents/skills
+    # original (the mutation-tested one). If the description diverges, the
+    # routing table would dispatch on a stale description -- same drift class
+    # the registry sync guard catches, but for skill content.
+    agents_orig = Path.home() / ".agents" / "skills" / "vault-check-first" / "SKILL.md"
+    if agents_orig.exists():
+        hermes = Path(entry["skill_md"]).read_text(encoding="utf-8")
+        orig = agents_orig.read_text(encoding="utf-8")
+        import re as _re
+
+        def _fm_field(text: str, key: str) -> str:
+            m = _re.search(rf"^{key}:\s*(.+)$", text, _re.MULTILINE)
+            return m.group(1).strip().strip('"').strip() if m else ""
+
+        for key in ("name", "description"):
+            h, o = _fm_field(hermes, key), _fm_field(orig, key)
+            assert h == o, (
+                f"vault-check-first drift: hermes {key!r} differs from ~/.agents/skills "
+                f"original — re-copy the skill or rebuild"
+            )
     # Zero-spend dispatch proof: dry-run through the real CLI.
     proc = subprocess.run(
         [sys.executable, "cli.py", "route", "--domain", "vault-check-first",
