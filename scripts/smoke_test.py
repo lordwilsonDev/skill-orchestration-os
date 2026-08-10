@@ -277,6 +277,27 @@ def test_route_stubbed_dispatch():
             dr.CLAUDE_BIN = saved
 
 
+def test_registry_copies_in_sync():
+    """Canonical domains.json (skill-orchestration-os) and the domain-router
+    shim copy must not drift: same count, same skill_id list, same container
+    list. Mirrors the d03 sync-guard pattern — a rebuild of one without the
+    other fails this test. `generated_at` timestamps always differ, so the
+    comparison normalizes them away."""
+    canonical = Path(__file__).resolve().parent.parent / "domains.json"
+    shim = Path.home() / ".hermes" / "domain-router" / "domains.json"
+    assert canonical.exists(), f"canonical domains.json missing: {canonical}"
+    assert shim.exists(), f"shim domains.json missing: {shim}"
+    c = json.loads(canonical.read_text(encoding="utf-8"))
+    s = json.loads(shim.read_text(encoding="utf-8"))
+    assert c["count"] == s["count"], (
+        f"registry drift: canonical {c['count']} vs shim {s['count']} "
+        f"— rebuild both with --rebuild")
+    assert c["containers"] == s["containers"], (
+        "registry drift: container lists differ — rebuild both with --rebuild")
+    assert [e["skill_id"] for e in c["skills"]] == [e["skill_id"] for e in s["skills"]], (
+        "registry drift: skill_id lists differ — rebuild both with --rebuild")
+
+
 if __name__ == "__main__":
     tests = [
         test_registry,
@@ -292,6 +313,7 @@ if __name__ == "__main__":
         test_route_rejects_unknown_domain,
         test_route_cli_dry_run,
         test_route_stubbed_dispatch,
+        test_registry_copies_in_sync,
     ]
     passed = 0
     for test in tests:
