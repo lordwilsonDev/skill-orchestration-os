@@ -60,6 +60,57 @@ _register_tool(
     side_effects=["network", "read"],
 )
 
+# GoHighLevel (GHL) tools
+_register_tool(
+    name="ghl_list_pipelines",
+    description="List GoHighLevel opportunity pipelines and their stages (read-only)",
+    inputs=[],
+    outputs=["pipelines", "count"],
+    side_effects=["network", "read"],
+)
+_register_tool(
+    name="ghl_list_contacts",
+    description="List GoHighLevel contacts in the sub-account (read-only)",
+    inputs=["limit?", "query?"],
+    outputs=["contacts", "total"],
+    side_effects=["network", "read"],
+)
+_register_tool(
+    name="ghl_upsert_contact",
+    description="Create or update a GoHighLevel contact by email/phone (dry-run unless confirm:true)",
+    inputs=["email?", "phone?", "name?", "companyName?", "tags?", "source?", "confirm?"],
+    outputs=["contact_id", "new"],
+    side_effects=["network", "write"],
+)
+_register_tool(
+    name="ghl_create_opportunity",
+    description="Create a GoHighLevel opportunity in a pipeline stage (dry-run unless confirm:true)",
+    inputs=["name", "pipelineId", "pipelineStageId", "contactId?", "monetaryValue?", "confirm?"],
+    outputs=["opportunity_id"],
+    side_effects=["network", "write"],
+)
+_register_tool(
+    name="ghl_move_opportunity",
+    description="Advance a GoHighLevel opportunity to a new stage/status (dry-run unless confirm:true)",
+    inputs=["opportunityId", "pipelineStageId?", "status?", "confirm?"],
+    outputs=["opportunity_id", "stage", "state"],
+    side_effects=["network", "write"],
+)
+_register_tool(
+    name="ghl_send_message",
+    description="Send an SMS or Email to a contact via GoHighLevel (dry-run unless confirm:true)",
+    inputs=["contactId", "type", "message", "subject?", "confirm?"],
+    outputs=["message_id", "conversation_id"],
+    side_effects=["network", "write"],
+)
+_register_tool(
+    name="ghl_delete_contact",
+    description="PERMANENTLY delete a GoHighLevel contact (destructive, no undo; dry-run unless confirm:true)",
+    inputs=["contactId", "confirm?"],
+    outputs=["deleted"],
+    side_effects=["network", "write", "destructive"],
+)
+
 # Agent-Reach tools
 _register_tool(
     name="agent_reach_doctor",
