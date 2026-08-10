@@ -1,17 +1,17 @@
 {
-  "generated_at": "2026-08-10T15:18:38.027641+00:00",
+  "generated_at": "2026-08-10T15:35:46.557946+00:00",
   "generator": "scripts/hygiene/mutation_score_snapshot.py",
   "source": "mutants/**/*.meta (mutmut verdict files)",
-  "total_mutants": 1194,
-  "evaluated": 1194,
-  "killed": 654,
+  "total_mutants": 1209,
+  "evaluated": 1209,
+  "killed": 660,
   "timeout": 4,
-  "survived": 536,
+  "survived": 545,
   "no_tests": 0,
   "suspicious": 0,
   "skipped": 0,
   "type_check": 0,
   "not_checked": 0,
-  "score_pct": 55.1,
+  "score_pct": 54.9,
   "score_formula": "(killed + timeout) / (evaluated - no_tests)"
 }
