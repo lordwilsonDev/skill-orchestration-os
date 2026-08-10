@@ -1,0 +1,17 @@
+{
+  "generated_at": "2026-08-10T14:12:19.820869+00:00",
+  "generator": "scripts/hygiene/mutation_score_snapshot.py",
+  "source": "mutants/**/*.meta (mutmut verdict files)",
+  "total_mutants": 605,
+  "evaluated": 605,
+  "killed": 319,
+  "timeout": 0,
+  "survived": 286,
+  "no_tests": 0,
+  "suspicious": 0,
+  "skipped": 0,
+  "type_check": 0,
+  "not_checked": 0,
+  "score_pct": 52.7,
+  "score_formula": "(killed + timeout) / (evaluated - no_tests)"
+}
