@@ -411,13 +411,25 @@ def test_sovereign_verification_routable():
     assert "dispatched:" not in proc.stdout  # dry-run must not execute
 
 
-class _Skip(Exception):
+try:
+    import pytest  # present under mutmut's pytest runner; absent in zero-dep use
+    _PYTEST_SKIP_EXC = pytest.skip.Exception
+except ImportError:  # pragma: no cover
+    _PYTEST_SKIP_EXC = Exception
+
+
+class _Skip(_PYTEST_SKIP_EXC):
     """Raised by a test whose environment-dependent legs are inapplicable in
     the current checkout (e.g. sibling trees CI doesn't clone). The runner
     prints a visible SKIP line and counts the test as passed — the test was
     not violated, it was not applicable. On the local machine every test runs
     at full strength, so a skip here always indicates an environment gap,
-    never a hidden failure."""
+    never a hidden failure.
+
+    Under mutmut the suite is driven by pytest: a raised pytest.skip.Exception
+    is a real skip, while a plain Exception would fail the baseline run (-x
+    stops at the first one) and poison every mutant verdict. The standalone
+    runner catches _Skip directly either way."""
 
 
 if __name__ == "__main__":
