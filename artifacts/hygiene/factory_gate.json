@@ -3,14 +3,14 @@
     "project_id": "d1d1c5cc4863",
     "name": "skill-orchestration-os",
     "root": "/Users/lordwilson/.hermes/skills/skill-orchestration-os",
-    "discovered_at": "2026-08-10T07:11:37.815745+00:00"
+    "discovered_at": "2026-08-10T07:12:39.127933+00:00"
   },
   "BASELINE": {
     "project": {
       "project_id": "d1d1c5cc4863",
       "name": "skill-orchestration-os",
       "root": "/Users/lordwilson/.hermes/skills/skill-orchestration-os",
-      "discovered_at": "2026-08-10T07:11:37.815745+00:00"
+      "discovered_at": "2026-08-10T07:12:39.127933+00:00"
     },
     "tests": "n/a",
     "git": "n/a",
@@ -20,7 +20,7 @@
   "VERIFICATION": {
     "pytest": {
       "passed": true,
-      "summary": "15 passed, 2 warnings in 0.56s",
+      "summary": "15 passed, 2 warnings in 0.50s",
       "duration_s": 1
     },
     "coverage": {
@@ -37,7 +37,7 @@
       "wrong_secret": null,
       "missing_secret": null
     },
-    "git_head": "fb8a771e2daa3a932b9103a4ef76bc9447943d0c"
+    "git_head": "350cddd7bc8525085e71189f735547712ed20b1b"
   },
   "SUITE_CONFIG": {
     "source": "<project>/scripts/hygiene/suite.json",
@@ -50,15 +50,15 @@
   "EVIDENCE_INDEX": {
     "claims_verified": 1,
     "artifacts": [
-      "/Users/lordwilson/.hermes/skills/skill-orchestration-os/artifacts/hygiene/o01_orchestration_smoke_20260810T071139Z.json"
+      "/Users/lordwilson/.hermes/skills/skill-orchestration-os/artifacts/hygiene/o01_orchestration_smoke_20260810T071240Z.json"
     ],
-    "verified_at": "2026-08-10T07:11:39.810630+00:00",
+    "verified_at": "2026-08-10T07:12:40.927420+00:00",
     "member_results": [
       {
         "experiment": "o01_orchestration_smoke",
         "skill": "regression-hygiene",
         "verdict": "pass",
-        "artifact": "/Users/lordwilson/.hermes/skills/skill-orchestration-os/artifacts/hygiene/o01_orchestration_smoke_20260810T071139Z.json",
+        "artifact": "/Users/lordwilson/.hermes/skills/skill-orchestration-os/artifacts/hygiene/o01_orchestration_smoke_20260810T071240Z.json",
         "violations": []
       }
     ]
