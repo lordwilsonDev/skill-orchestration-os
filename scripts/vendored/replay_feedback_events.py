@@ -1,45 +1,55 @@
 #!/usr/bin/env python3
-"""replay_feedback_events.py — the TASK_FAILED replay consumer (producer adapter).
+"""replay_feedback_events.py — the ledger's producer adapters (replay consumers).
 
-Reads the reality-loop's TASK_FAILED event stream
-(skill-orchestration-os/logs/feedback_events.jsonl) and feeds the ledger's
-claim registry as NEGATIVE evidence (polarity CONTRADICTING) — the
-sovereign-verification blueprint's "negative evidence is first-class"
-invariant made operational.
+Feeds producer output into the claim registry as first-class evidence. Two
+producers, one ledger, one cursor:
 
-Every failure event becomes:
-  1. a derived claim  — "<subject> completes successfully" (the claim reality
-     contradicted), registered in the ledger claim registry (ledger/claims.json)
-     with a deterministic verdict:
-       - previously VERIFIED/SUPPORTED/VALIDATED/REGRESSED  -> REGRESSED
-         (historical green + fresh contradicting evidence)
-       - previously CONTESTED                               -> CONTESTED
-         (supporting and contradicting evidence still coexist)
-       - otherwise                                         -> UNVERIFIED
-         (negative evidence preserved; nothing was ever supported)
-  2. a canonical evidence artifact — ledger/evidence/negative/<ts>_<ev_id>.json
-     with polarity CONTRADICTING and full provenance (execution / environment /
-     input / verifier / dependency), content-hashed so tampering is detectable.
+  PRODUCER 1 — the reality loop's TASK_FAILED event stream
+  (skill-orchestration-os/logs/feedback_events.jsonl). Every failure event
+  becomes a derived claim ("<subject> completes without failure") plus a
+  canonical evidence artifact, polarity CONTRADICTING, under
+  ledger/evidence/negative/ — negative evidence is first-class.
 
-Idempotent by design: a replay cursor (ledger/replay_cursor.json) records every
-processed event identity (ts + task_id + failed_step); re-runs skip them, so
-the consumer is safe to run daily or after every event write.
+  PRODUCER 2 — the capability-composer live probe
+  (~/capability-composer/evidence/live/). Every probe artifact is ALREADY a
+  §8-shaped evidence object (the probe writes the canonical contract): its
+  claim_id (e.g. ghl.live.reads_work) is registered verbatim, its polarity
+  drives the verdict (SUPPORTING → VERIFIED, CONTRADICTING → REGRESSED, both
+  → CONTESTED), its content hash is VERIFIED against the artifact's own
+  artifact_hash (tamper detection — the ledger must be harder to fool than
+  the claims it evaluates), and it is stored under ledger/evidence/live/.
+
+Deterministic verdicts (shared transition policy):
+  - fresh CONTRADICTING on a previously-supported claim -> REGRESSED
+    (historical green + fresh contradicting evidence)
+  - fresh SUPPORTING on a previously-contradicted claim -> CONTESTED
+    (supporting and contradicting evidence now coexist)
+  - SUPPORTING with no contradiction -> VERIFIED (valid evidence exists)
+  - CONTRADICTING with no support history -> UNVERIFIED
+    (negative evidence preserved; nothing was ever supported)
+
+Idempotent by design: a replay cursor (ledger/replay_cursor.json) records
+processed identities (event content hashes, namespaced probe evidence ids);
+re-runs skip them, so the consumer is safe to run daily or after every write.
 
 Zero-spend and deterministic: stdlib-only, no LLM, no network.
 
 CLI:
-  --events PATH     the TASK_FAILED jsonl stream (default: the canonical
-                    skill-orchestration-os logs/feedback_events.jsonl)
-  --ledger-dir DIR  ledger root (default: <skill>/ledger)
-  --git-head SHA    bind the artifacts to a git identity (default: unknown)
-  --dry-run         print the ingest plan, write nothing
-  --self-test       in-memory synthetic events -> temp ledger; asserts the
-                    full path (ingest, dedupe, verdicts, cursor). Exit 0/1.
+  --events PATH       the TASK_FAILED jsonl stream (default: the canonical
+                      skill-orchestration-os logs/feedback_events.jsonl)
+  --probe-evidence DIR  the live-probe §8 artifact dir (default:
+                      ~/capability-composer/evidence/live)
+  --ledger-dir DIR    ledger root (default: <skill>/ledger)
+  --git-head SHA      bind the artifacts to a git identity (default: unknown)
+  --dry-run           print the ingest plan, write nothing
+  --self-test         in-memory synthetic events + probe artifacts -> temp
+                      ledger; asserts the full path (ingest, dedupe, verdicts,
+                      tamper detection, cursor). Exit 0/1.
 
 Exit codes: 0 = success (including "nothing to replay" — an absent stream
-is not an incident); 1 = any malformed line or ledger write failure (a
-corrupt event stream is itself a ledger incident — we fail loud, never
-silently replay the clean prefix).
+or probe dir is not an incident); 1 = any malformed line/artifact or ledger
+write failure (a corrupt input is itself a ledger incident — we fail loud,
+never silently ingest the clean prefix); 2 = bad arguments.
 """
 
 from __future__ import annotations
@@ -54,10 +64,14 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 TOOLCHAIN = "sovereign-verification/replay_feedback_events"
-TOOL_VERSION = "1.0"
+TOOL_VERSION = "1.1"
 EVENT_TYPE = "TASK_FAILED"
 POLARITY_CONTRADICTING = "CONTRADICTING"
+POLARITY_SUPPORTING = "SUPPORTING"
+PROBE_EVIDENCE_TYPE = "live_probe"
 TIER = "T3"  # real execution produced the failure — EXECUTED-level evidence
+PROBE_TIER = "T4"  # live probe = executed against the real external system — INTEGRATED-level evidence
+DEFAULT_PROBE_DIR = Path.home() / "capability-composer" / "evidence" / "live"
 
 # Claim ids that were supported at some point; fresh negative evidence against
 # them means REGRESSED (historical green + current red), per the blueprint.
@@ -181,6 +195,57 @@ def _verdict_for(prior: Optional[dict]) -> str:
     return "UNVERIFIED"
 
 
+def _verdict_for_polarity(polarity: str, prior: Optional[dict]) -> str:
+    """Transition policy for a fresh evidence object with an explicit polarity.
+
+    SUPPORTING on an uncontested claim -> VERIFIED (valid evidence exists); on
+    a claim that already carries contradiction (REGRESSED or CONTESTED, i.e.
+    negative_evidence is non-empty) -> CONTESTED — support and contradiction
+    COEXIST, the ledger never prefers one side. CONTRADICTING follows the
+    negative path exactly (REGRESSED from support history, CONTESTED stays
+    CONTESTED, else UNVERIFIED). Keying on the evidence lists, not the prior
+    verdict string, keeps REGRESSED honest: REGRESSED is in
+    _PREVIOUSLY_VERIFIED, so a verdict-string check would wrongly re-elevate.
+    """
+    if polarity == POLARITY_SUPPORTING:
+        prior_negative = (prior or {}).get("negative_evidence") or []
+        if prior_negative:
+            return "CONTESTED"  # support + contradiction coexist
+        return "VERIFIED"  # first or further valid supporting evidence
+    return _verdict_for(prior)
+
+
+def probe_identity(artifact: dict) -> str:
+    """Dedupe identity for a probe artifact: its own evidence_id, namespaced
+    so it can never collide with event content-hash identities."""
+    return f"live:{artifact.get('evidence_id', '')}"
+
+
+def verify_probe_hash(artifact: dict) -> bool:
+    """Content-hash verification — the §8 artifact's artifact_hash must equal
+    the sha256 of the artifact with the hash field blanked (the capability-
+    composer probe's own convention). A mismatch means the evidence was
+    tampered with after production: fail loud, never ingest."""
+    payload = dict(artifact)
+    payload["artifact_hash"] = ""
+    canonical = json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+    return hashlib.sha256(canonical).hexdigest() == str(artifact.get("artifact_hash", ""))
+
+
+def derive_probe_claim(artifact: dict) -> Dict[str, str]:
+    """The probe artifact declares its own claim — register it verbatim.
+
+    claim_id = the artifact's claim_id (e.g. ghl.live.reads_work); subject =
+    its subject_id (e.g. ghl.live.contacts.search). Unlike TASK_FAILED
+    events, which derive claims, the probe is already the canonical §8
+    evidence object with the claim it stands for.
+    """
+    subject = str(artifact.get("subject_id") or artifact.get("claim_id") or "unknown")
+    claim_id = str(artifact.get("claim_id") or f"claim:ok:{subject}")
+    text = f'"{subject}" works against the live API'
+    return {"subject": subject, "claim_id": claim_id, "text": text}
+
+
 def ingest(events_path: Path, ledger_dir: Path, git_head: str,
            dry_run: bool = False) -> Dict[str, Any]:
     """Replay the event stream into the ledger. Returns a run summary.
@@ -256,18 +321,31 @@ def _ingest_valid(events: List[dict], events_path: Path, ledger_dir: Path,
             "text": claim["text"],
             "verification_tier": TIER,
             "verdict": verdict,
+            # The contradiction must COEXIST with what was historically
+            # supported — a REGRESSED claim shows WHAT it regressed from.
+            # Carry the prior support linkage forward; never silently drop it
+            # (blueprint: contradictory evidence is never silently discarded).
+            # (cross-producer test finding: the entry used to drop these keys)
+            "supporting_evidence": sorted(set((prior or {}).get("supporting_evidence", []))),
+            "inconclusive_evidence": sorted(set((prior or {}).get("inconclusive_evidence", []))),
             "negative_evidence": sorted({*(prior or {}).get("negative_evidence", []), artifact["evidence_id"]}),
             # First-ever negative evidence on a previously-clean claim must
             # record the event ts, not stay null (or falls back correctly).
             "first_negative_evidence_at": (prior or {}).get("first_negative_evidence_at") or ev.get("ts"),
             "last_negative_evidence_at": ev.get("ts"),
         }
+        if prior and prior.get("first_supporting_evidence_at"):
+            entry["first_supporting_evidence_at"] = prior.get("first_supporting_evidence_at")
+            entry["last_supporting_evidence_at"] = prior.get("last_supporting_evidence_at")
+        # Keep the in-run view fresh: two distinct failures of the SAME task
+        # in one batch must see each other's entries, or the second verdict
+        # would ignore the first (same-shape bug fixed in the probe adapter).
         if prior is None:
             registry["claims"].append(entry)
         else:
-            by_id[claim["claim_id"]] = entry
             idx = next(i for i, c in enumerate(registry["claims"]) if c.get("claim_id") == claim["claim_id"])
             registry["claims"][idx] = entry
+        by_id[claim["claim_id"]] = entry
         processed.add(ident)
         ingested += 1
 
@@ -281,6 +359,144 @@ def _ingest_valid(events: List[dict], events_path: Path, ledger_dir: Path,
 
     return {"status": "ok" if ingested else "no_new_events",
             "events": len(events), "ingested": ingested, "skipped": skipped,
+            "errors": [], "claims": len(registry["claims"])}
+
+
+def ingest_probe_evidence(probe_dir: Path, ledger_dir: Path, git_head: str,
+                          dry_run: bool = False) -> Dict[str, Any]:
+    """Ingest capability-composer live-probe §8 artifacts into the ledger.
+
+    An ABSENT dir is not an incident (no probe has run yet) — status
+    "no_probe_evidence", no errors, exit 0 upstream. A MALFORMED or TAMPERED
+    artifact is an incident — status "error", and nothing is ingested (fail
+    loud, never silently ingest the clean prefix).
+
+    Each artifact is already the canonical §8 evidence object: the claim it
+    declares is registered verbatim (claim_id from the artifact), its
+    polarity drives the verdict, and its own content hash is verified before
+    ingestion (tamper detection).
+    """
+    if not probe_dir.exists():
+        return {"status": "no_probe_evidence", "artifacts": 0, "ingested": 0,
+                "skipped": 0, "errors": [], "claims": 0}
+    paths = sorted(probe_dir.glob("*.json"))
+    artifacts: List[dict] = []
+    errors: List[str] = []
+    for path in paths:
+        try:
+            art = json.loads(path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError) as exc:
+            errors.append(f"{path.name}: malformed artifact: {exc}")
+            continue
+        if art.get("evidence_type") != PROBE_EVIDENCE_TYPE:
+            continue  # not a live-probe artifact — not this producer's contract
+        if not verify_probe_hash(art):
+            errors.append(f"{path.name}: artifact_hash mismatch — tampering detected")
+            continue
+        # §8 contract validation: an unknown polarity or a missing evidence_id
+        # would silently misclassify the claim (any non-SUPPORTING value feeds
+        # the negative path) or collapse dedupe (identity "live:"). Both are
+        # contract violations — fail loud, never ingest.
+        polarity = str(art.get("polarity", ""))
+        if polarity not in (POLARITY_SUPPORTING, POLARITY_CONTRADICTING):
+            errors.append(f"{path.name}: unknown polarity {polarity!r} — must be "
+                          "SUPPORTING or CONTRADICTING")
+            continue
+        if not art.get("evidence_id"):
+            errors.append(f"{path.name}: missing evidence_id — §8 contract violation")
+            continue
+        artifacts.append(art)
+    if errors:
+        return {"status": "error", "artifacts": len(artifacts), "ingested": 0,
+                "skipped": 0, "errors": errors, "claims": 0}
+    if not artifacts:
+        return {"status": "no_new_artifacts", "artifacts": 0, "ingested": 0,
+                "skipped": 0, "errors": [], "claims": 0}
+
+    cursor_file = ledger_dir / "replay_cursor.json"
+    claims_file = ledger_dir / "claims.json"
+    live_dir = ledger_dir / "evidence" / "live"
+    processed = load_cursor(cursor_file)
+    registry = load_registry(claims_file)
+    by_id = {c.get("claim_id"): c for c in registry["claims"]}
+
+    ingested = 0
+    skipped = 0
+    for art in artifacts:
+        ident = probe_identity(art)
+        if ident in processed:
+            skipped += 1
+            continue
+        claim = derive_probe_claim(art)
+        polarity = str(art.get("polarity", ""))
+        ts = str(art.get("timestamp", ""))
+        evidence_id = str(art["evidence_id"])
+
+        if not dry_run:
+            live_dir.mkdir(parents=True, exist_ok=True)
+            out = live_dir / f"{evidence_id}.json"
+            if not out.exists():
+                out.write_text(json.dumps(art, indent=2) + "\n", encoding="utf-8")
+
+        prior = by_id.get(claim["claim_id"])
+        verdict = _verdict_for_polarity(polarity, prior)
+        entry = {
+            "claim_id": claim["claim_id"],
+            "subject": claim["subject"],
+            "text": claim["text"],
+            "verification_tier": PROBE_TIER,
+            "verdict": verdict,
+            "supporting_evidence": sorted({
+                *(prior or {}).get("supporting_evidence", []),
+                *([evidence_id] if polarity == POLARITY_SUPPORTING else []),
+            }),
+            "inconclusive_evidence": sorted(set((prior or {}).get("inconclusive_evidence", []))),
+            "negative_evidence": sorted({
+                *(prior or {}).get("negative_evidence", []),
+                *([evidence_id] if polarity == POLARITY_CONTRADICTING else []),
+            }),
+            "first_supporting_evidence_at": (
+                (prior or {}).get("first_supporting_evidence_at")
+                or (ts if polarity == POLARITY_SUPPORTING else None)
+            ),
+            "last_supporting_evidence_at": (
+                ts if polarity == POLARITY_SUPPORTING
+                else (prior or {}).get("last_supporting_evidence_at")
+            ),
+            "first_negative_evidence_at": (
+                (prior or {}).get("first_negative_evidence_at")
+                or (ts if polarity == POLARITY_CONTRADICTING else None)
+            ),
+            "last_negative_evidence_at": (
+                ts if polarity == POLARITY_CONTRADICTING
+                else (prior or {}).get("last_negative_evidence_at")
+            ),
+        }
+        # Keep the in-run view fresh: a second artifact on the SAME claim in
+        # one batch (e.g. SUPPORTING + CONTRADICTING for ghl.live.reads_work)
+        # must see the first artifact's entry, or its verdict would ignore it.
+        if prior is None:
+            registry["claims"].append(entry)
+        else:
+            idx = next(i for i, c in enumerate(registry["claims"])
+                       if c.get("claim_id") == claim["claim_id"])
+            registry["claims"][idx] = entry
+        by_id[claim["claim_id"]] = entry
+        processed.add(ident)
+        ingested += 1
+
+    if not dry_run:
+        registry["claims"].sort(key=lambda c: c.get("claim_id", ""))
+        registry["generated_at"] = datetime.now(timezone.utc).isoformat(timespec="seconds")
+        claims_file.write_text(json.dumps(registry, indent=2) + "\n", encoding="utf-8")
+        cursor_file.write_text(
+            json.dumps({"processed": sorted(processed),
+                        "updated_at": datetime.now(timezone.utc).isoformat(timespec="seconds")},
+                        indent=2) + "\n",
+            encoding="utf-8")
+
+    return {"status": "ok" if ingested else "no_new_artifacts",
+            "artifacts": len(artifacts), "ingested": ingested, "skipped": skipped,
             "errors": [], "claims": len(registry["claims"])}
 
 
@@ -355,6 +571,9 @@ def _run_self_test() -> int:
             "claim_id": "claim:ok:task:task_bbb2", "subject": "task:task_bbb2",
             "text": '"task:task_bbb2" completes without failure',
             "verification_tier": "T3", "verdict": "VERIFIED",
+            "supporting_evidence": ["ev_supported_once"],
+            "first_supporting_evidence_at": "2026-08-10T09:00:00+00:00",
+            "last_supporting_evidence_at": "2026-08-10T09:00:00+00:00",
             "negative_evidence": [], "first_negative_evidence_at": None,
             "last_negative_evidence_at": None,
         })
@@ -374,6 +593,9 @@ def _run_self_test() -> int:
         updated = {c["claim_id"]: c for c in load_registry(ledger / "claims.json")["claims"]}
         assert updated["claim:ok:task:task_bbb2"]["verdict"] == "REGRESSED", updated
         assert updated["claim:ok:task:task_bbb2"]["verification_tier"] == "T3"
+        # REGRESSED must still show WHAT was supported (never dropped)
+        assert updated["claim:ok:task:task_bbb2"]["supporting_evidence"] == ["ev_supported_once"], updated
+        assert updated["claim:ok:task:task_bbb2"]["first_supporting_evidence_at"] == "2026-08-10T09:00:00+00:00", updated
         # First-ever negative evidence on a clean claim records the event ts.
         assert updated["claim:ok:task:task_bbb2"]["first_negative_evidence_at"] == ev2["ts"], updated
 
@@ -387,6 +609,7 @@ def _run_self_test() -> int:
             "claim_id": "claim:ok:task:task_ccc3", "subject": "task:task_ccc3",
             "text": '"task:task_ccc3" completes without failure',
             "verification_tier": "T3", "verdict": "CONTESTED",
+            "supporting_evidence": ["ev_supported"],
             "negative_evidence": ["ev_prior"],
             "first_negative_evidence_at": "2026-08-10T10:00:00+00:00",
             "last_negative_evidence_at": "2026-08-10T10:00:00+00:00",
@@ -401,6 +624,7 @@ def _run_self_test() -> int:
         assert fourth["ingested"] == 1, fourth
         c3 = {c["claim_id"]: c for c in load_registry(ledger / "claims.json")["claims"]}["claim:ok:task:task_ccc3"]
         assert c3["verdict"] == "CONTESTED", c3
+        assert c3.get("supporting_evidence") == ["ev_supported"], c3  # support linkage preserved
         assert "ev_prior" in c3["negative_evidence"], c3          # accumulation preserved
         assert c3["first_negative_evidence_at"] == "2026-08-10T10:00:00+00:00", c3
         assert c3["last_negative_evidence_at"] == ev3["ts"], c3
@@ -434,7 +658,130 @@ def _run_self_test() -> int:
         assert dry["ingested"] == 1, dry
         assert not (ledger_dry / "claims.json").exists(), "dry-run must write nothing"
 
-    print("self-test: PASS (ingest, dedupe incl. same-second distinct, UNVERIFIED/REGRESSED/CONTESTED verdicts, T3 tier, accumulation, malformed fail-loud, dry-run, no-events exit 0)")
+        # ---- PRODUCER 2: live-probe §8 artifacts ----
+
+        def _probe(evidence_id: str, claim_id: str, subject: str, polarity: str,
+                   ts: str) -> dict:
+            art = {
+                "evidence_id": evidence_id, "subject_id": subject,
+                "claim_id": claim_id, "evidence_type": "live_probe",
+                "polarity": polarity, "git_head": "deadbeef",
+                "toolchain": "capability-composer live-probe v1.0",
+                "timestamp": ts, "result": "PASS" if polarity == "SUPPORTING" else "FAIL",
+                "probe": {"provider": subject.split(".")[0], "latency_ms": 1},
+                "provenance": {"execution": {}, "environment": {}, "input": {},
+                                "verifier": {}, "dependency": {}},
+                "freshness": "FRESH", "artifact_hash": "",
+            }
+            payload = dict(art)
+            payload["artifact_hash"] = ""
+            art["artifact_hash"] = _sha256(
+                json.dumps(payload, sort_keys=True, separators=(",", ":")))
+            return art
+
+        probe_dir = root / "probe_evidence"
+        probe_dir.mkdir()
+        # SUPPORTING probe -> claim VERIFIED, T4 tier.
+        (probe_dir / "a.json").write_text(json.dumps(
+            _probe("ev_live_ghl_1", "ghl.live.reads_work",
+                   "ghl.live.contacts.search", "SUPPORTING",
+                   "2026-08-10T15:00:00+00:00")) + "\n")
+        ledger_probe = root / "ledger_probe"
+        p1 = ingest_probe_evidence(probe_dir, ledger_probe, "deadbeef")
+        assert p1["status"] == "ok" and p1["ingested"] == 1, p1
+        claims1 = {c["claim_id"]: c for c in
+                   load_registry(ledger_probe / "claims.json")["claims"]}
+        ghl = claims1["ghl.live.reads_work"]
+        assert ghl["verdict"] == "VERIFIED", ghl
+        assert ghl["verification_tier"] == "T4", ghl
+        assert ghl["supporting_evidence"] == ["ev_live_ghl_1"], ghl
+        assert not ghl["negative_evidence"], ghl
+        assert (ledger_probe / "evidence" / "live" / "ev_live_ghl_1.json").exists()
+
+        # Idempotent: re-ingesting the same dir ingests nothing new.
+        p1b = ingest_probe_evidence(probe_dir, ledger_probe, "deadbeef")
+        assert p1b["ingested"] == 0 and p1b["skipped"] == 1, p1b
+
+        # CONTRADICTING probe on the same claim -> REGRESSED, evidence coexists.
+        (probe_dir / "b.json").write_text(json.dumps(
+            _probe("ev_live_ghl_2", "ghl.live.reads_work",
+                   "ghl.live.contacts.search", "CONTRADICTING",
+                   "2026-08-10T16:00:00+00:00")) + "\n")
+        p2 = ingest_probe_evidence(probe_dir, ledger_probe, "deadbeef")
+        assert p2["ingested"] == 1, p2
+        ghl2 = {c["claim_id"]: c for c in
+                load_registry(ledger_probe / "claims.json")["claims"]}["ghl.live.reads_work"]
+        assert ghl2["verdict"] == "REGRESSED", ghl2
+        assert ghl2["supporting_evidence"] == ["ev_live_ghl_1"], ghl2  # never dropped
+        assert ghl2["negative_evidence"] == ["ev_live_ghl_2"], ghl2
+        assert ghl2["first_supporting_evidence_at"] == "2026-08-10T15:00:00+00:00", ghl2
+        assert ghl2["last_negative_evidence_at"] == "2026-08-10T16:00:00+00:00", ghl2
+
+        # Fresh SUPPORTING after the contradiction -> CONTESTED (both coexist).
+        (probe_dir / "c.json").write_text(json.dumps(
+            _probe("ev_live_ghl_3", "ghl.live.reads_work",
+                   "ghl.live.contacts.search", "SUPPORTING",
+                   "2026-08-10T17:00:00+00:00")) + "\n")
+        p3 = ingest_probe_evidence(probe_dir, ledger_probe, "deadbeef")
+        assert p3["ingested"] == 1, p3
+        ghl3 = {c["claim_id"]: c for c in
+                load_registry(ledger_probe / "claims.json")["claims"]}["ghl.live.reads_work"]
+        assert ghl3["verdict"] == "CONTESTED", ghl3
+        assert ghl3["supporting_evidence"] == ["ev_live_ghl_1", "ev_live_ghl_3"], ghl3
+        assert ghl3["negative_evidence"] == ["ev_live_ghl_2"], ghl3
+
+        # Tampered artifact -> fail loud, nothing ingested.
+        tampered = root / "probe_tampered"
+        tampered.mkdir()
+        good = _probe("ev_live_hub_1", "hubspot.live.reads_work",
+                      "hubspot.live.contacts.search", "SUPPORTING",
+                      "2026-08-10T15:00:00+00:00")
+        good["result"] = "FAIL"  # mutate AFTER hashing — hash no longer matches
+        (tampered / "a.json").write_text(json.dumps(good) + "\n")
+        pt = ingest_probe_evidence(tampered, root / "ledger_tampered", "x")
+        assert pt["status"] == "error" and "tampering" in pt["errors"][0], pt
+        assert not (root / "ledger_tampered" / "claims.json").exists(), \
+            "tampered artifacts must ingest nothing"
+
+        # Unknown polarity -> fail loud, nothing ingested.
+        bad_pol = root / "probe_bad_polarity"
+        bad_pol.mkdir()
+        (bad_pol / "a.json").write_text(json.dumps(
+            _probe("ev_live_x1", "x.live.reads_work", "x.live.contacts.search",
+                   "NEUTRAL", "2026-08-10T15:00:00+00:00")) + "\n")
+        pb = ingest_probe_evidence(bad_pol, root / "ledger_badpol", "x")
+        assert pb["status"] == "error" and "polarity" in pb["errors"][0], pb
+        assert not (root / "ledger_badpol" / "claims.json").exists(), \
+            "unknown polarity must ingest nothing"
+
+        # Missing evidence_id -> fail loud, nothing ingested. (Recompute the
+        # hash AFTER deleting the key so the artifact is hash-valid and the
+        # evidence_id contract check is what fires, not the tamper check.)
+        no_eid = root / "probe_no_eid"
+        no_eid.mkdir()
+        missing = _probe("ev_live_y1", "y.live.reads_work", "y.live.contacts.search",
+                         "SUPPORTING", "2026-08-10T15:00:00+00:00")
+        del missing["evidence_id"]
+        missing["artifact_hash"] = _sha256(json.dumps(
+            {k: ("" if k == "artifact_hash" else v) for k, v in missing.items()},
+            sort_keys=True, separators=(",", ":")))
+        (no_eid / "a.json").write_text(json.dumps(missing) + "\n")
+        pe = ingest_probe_evidence(no_eid, root / "ledger_noeid", "x")
+        assert pe["status"] == "error" and "evidence_id" in pe["errors"][0], pe
+        assert not (root / "ledger_noeid" / "claims.json").exists(), \
+            "missing evidence_id must ingest nothing"
+
+        # Absent probe dir is NOT an incident.
+        absent_p = ingest_probe_evidence(root / "no_probe_dir", root / "ledger_nop", "x")
+        assert absent_p["status"] == "no_probe_evidence" and not absent_p["errors"], absent_p
+
+        # Probe dry-run writes nothing.
+        pd = ingest_probe_evidence(probe_dir, root / "ledger_probe_dry", "x", dry_run=True)
+        assert pd["ingested"] == 3, pd
+        assert not (root / "ledger_probe_dry" / "claims.json").exists(), \
+            "probe dry-run must write nothing"
+
+    print("self-test: PASS (TASK_FAILED + live-probe producers: ingest, dedupe incl. same-second distinct, UNVERIFIED/VERIFIED/REGRESSED/CONTESTED verdicts, T3/T4 tiers, accumulation, tamper fail-loud, malformed fail-loud, dry-run, no-events exit 0)")
     return 0
 
 
@@ -446,6 +793,8 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser.add_argument("--events", type=Path,
                         default=Path.home() / ".hermes" / "skills" / "skill-orchestration-os" / "logs" / "feedback_events.jsonl",
                         help="TASK_FAILED event stream (jsonl)")
+    parser.add_argument("--probe-evidence", type=Path, default=DEFAULT_PROBE_DIR,
+                        help="live-probe §8 artifact dir (default: ~/capability-composer/evidence/live)")
     parser.add_argument("--ledger-dir", type=Path, default=None,
                         help="ledger root (default: <skill>/ledger)")
     parser.add_argument("--git-head", default="unknown", help="git identity to bind artifacts to")
@@ -457,24 +806,38 @@ def main(argv: Optional[List[str]] = None) -> int:
         return _run_self_test()
 
     ledger_dir = args.ledger_dir or (Path(__file__).resolve().parent.parent / "ledger")
-    summary = ingest(args.events, ledger_dir, args.git_head, dry_run=args.dry_run)
+    failed = False
 
+    summary = ingest(args.events, ledger_dir, args.git_head, dry_run=args.dry_run)
     if summary["errors"]:
-        print("replay_feedback_events: FAILED")
+        print("replay_feedback_events: FAILED (TASK_FAILED stream)")
         for err in summary["errors"]:
             print(f"  error: {err}")
-        return 1
-    if summary["status"] == "no_events":
-        # The absent-stream branch must still honor --dry-run: a caller (or
-        # gate leg) that dry-runs before the first failure exists must see the
-        # marker, not a bare "nothing to replay" — the smoke leg asserts it.
+        failed = True
+    elif summary["status"] == "no_events":
         print(f"replay_feedback_events: no event stream at {args.events} (nothing to replay)"
               + (" [dry-run — nothing written]" if args.dry_run else ""))
-        return 0
-    print(f"replay_feedback_events: {summary['ingested']} ingested, {summary['skipped']} already-replayed "
-          f"of {summary['events']} events; claims in registry: {summary['claims']}"
-          + (" [dry-run — nothing written]" if args.dry_run else ""))
-    return 0
+    else:
+        print(f"replay_feedback_events: {summary['ingested']} ingested, {summary['skipped']} already-replayed "
+              f"of {summary['events']} events; claims in registry: {summary['claims']}"
+              + (" [dry-run — nothing written]" if args.dry_run else ""))
+
+    probe = ingest_probe_evidence(args.probe_evidence, ledger_dir, args.git_head,
+                                  dry_run=args.dry_run)
+    if probe["errors"]:
+        print("replay_feedback_events: FAILED (live-probe evidence)")
+        for err in probe["errors"]:
+            print(f"  error: {err}")
+        failed = True
+    elif probe["status"] == "no_probe_evidence":
+        print(f"replay_feedback_events: no probe evidence at {args.probe_evidence} (nothing to ingest)"
+              + (" [dry-run — nothing written]" if args.dry_run else ""))
+    else:
+        print(f"replay_feedback_events: {probe['ingested']} probe artifact(s) ingested, "
+              f"{probe['skipped']} already-replayed; claims in registry: {probe['claims']}"
+              + (" [dry-run — nothing written]" if args.dry_run else ""))
+
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

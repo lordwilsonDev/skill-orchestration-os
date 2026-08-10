@@ -737,6 +737,122 @@ def test_replay_consumer_wired():
         assert again["ingested"] == 0, again
 
 
+def test_probe_evidence_consumer_wired():
+    """The live-probe producer adapter is wired: capability-composer §8
+    artifacts (already-shaped evidence with explicit polarity) flow through
+    the real consumer into a temp ledger — SUPPORTING -> VERIFIED,
+    CONTRADICTING on a supported claim -> REGRESSED, both -> CONTESTED — and
+    a TAMPERED artifact (hash mismatch) makes the real CLI exit non-zero
+    with nothing ingested (the ledger must be harder to fool than the claims
+    it evaluates). Absent probe dir exits 0 (nothing probed is not an
+    incident). Hermetic and zero-spend — temp fixtures, no network, no keys.
+
+    The consumer resolves through cli.CONSUMER_PATH (canonical sibling
+    locally, vendored in CI) — same mutation surface everywhere."""
+    import hashlib
+    import importlib.util
+    import subprocess
+    import tempfile
+
+    import cli
+
+    consumer_path = cli.CONSUMER_PATH
+    assert consumer_path.exists(), (
+        f"replay consumer missing at {consumer_path} — vendored copy absent")
+    spec = importlib.util.spec_from_file_location("replay_feedback_events", consumer_path)
+    consumer = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(consumer)
+
+    def _probe(evidence_id: str, claim_id: str, subject: str, polarity: str,
+               ts: str) -> dict:
+        art = {
+            "evidence_id": evidence_id, "subject_id": subject,
+            "claim_id": claim_id, "evidence_type": "live_probe",
+            "polarity": polarity, "git_head": "wired-test",
+            "toolchain": "capability-composer live-probe v1.0",
+            "timestamp": ts,
+            "result": "PASS" if polarity == "SUPPORTING" else "FAIL",
+            "probe": {"provider": subject.split(".")[0], "latency_ms": 1},
+            "provenance": {"execution": {}, "environment": {}, "input": {},
+                            "verifier": {}, "dependency": {}},
+            "freshness": "FRESH", "artifact_hash": "",
+        }
+        payload = dict(art)
+        payload["artifact_hash"] = ""
+        art["artifact_hash"] = hashlib.sha256(
+            json.dumps(payload, sort_keys=True, separators=(",", ":")).encode()
+        ).hexdigest()
+        return art
+
+    with tempfile.TemporaryDirectory(prefix="probe-wired-") as tmp:
+        tmp = Path(tmp)
+        probe_dir = tmp / "probe"
+        probe_dir.mkdir()
+        (probe_dir / "a.json").write_text(json.dumps(_probe(
+            "ev_live_w1", "ghl.live.reads_work", "ghl.live.contacts.search",
+            "SUPPORTING", "2026-08-10T20:00:00+00:00")) + "\n")
+        (probe_dir / "b.json").write_text(json.dumps(_probe(
+            "ev_live_w2", "ghl.live.reads_work", "ghl.live.contacts.search",
+            "CONTRADICTING", "2026-08-10T20:05:00+00:00")) + "\n")
+
+        missing_events = tmp / "no-events.jsonl"  # hermetic: no real stream
+
+        # Absent probe dir: exit 0 (nothing probed is not an incident).
+        proc0 = subprocess.run(
+            [sys.executable, str(consumer_path), "--events", str(missing_events),
+             "--probe-evidence", str(tmp / "missing"),
+             "--ledger-dir", str(tmp / "ledger0")],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert proc0.returncode == 0, proc0.stdout + proc0.stderr
+        assert "no probe evidence" in proc0.stdout, proc0.stdout
+
+        # SUPPORTING then CONTRADICTING on the same claim: VERIFIED -> REGRESSED,
+        # with the support linkage preserved (never dropped).
+        ledger = tmp / "ledger"
+        ok = consumer.ingest_probe_evidence(probe_dir, ledger, "wired-test")
+        assert ok["status"] == "ok" and ok["ingested"] == 2, ok
+        reg = json.loads((ledger / "claims.json").read_text())
+        claim = {c["claim_id"]: c for c in reg["claims"]}["ghl.live.reads_work"]
+        assert claim["verdict"] == "REGRESSED", claim
+        assert claim["supporting_evidence"] == ["ev_live_w1"], claim
+        assert claim["negative_evidence"] == ["ev_live_w2"], claim
+        assert claim["verification_tier"] == "T4", claim
+
+        # Idempotent: re-ingesting the same dir ingests nothing new.
+        again = consumer.ingest_probe_evidence(probe_dir, ledger, "wired-test")
+        assert again["ingested"] == 0, again
+
+        # Fresh SUPPORTING after the contradiction -> CONTESTED (coexist).
+        (probe_dir / "c.json").write_text(json.dumps(_probe(
+            "ev_live_w3", "ghl.live.reads_work", "ghl.live.contacts.search",
+            "SUPPORTING", "2026-08-10T20:10:00+00:00")) + "\n")
+        third = consumer.ingest_probe_evidence(probe_dir, ledger, "wired-test")
+        assert third["ingested"] == 1, third
+        reg3 = json.loads((ledger / "claims.json").read_text())
+        claim3 = {c["claim_id"]: c for c in reg3["claims"]}["ghl.live.reads_work"]
+        assert claim3["verdict"] == "CONTESTED", claim3
+
+        # TAMPERED artifact through the REAL CLI: non-zero exit, nothing ingested.
+        tampered = tmp / "tampered"
+        tampered.mkdir()
+        bad = _probe("ev_live_tampered", "hubspot.live.reads_work",
+                     "hubspot.live.contacts.search", "SUPPORTING",
+                     "2026-08-10T20:20:00+00:00")
+        bad["result"] = "FAIL"  # mutate AFTER hashing — hash no longer matches
+        (tampered / "a.json").write_text(json.dumps(bad) + "\n")
+        proc = subprocess.run(
+            [sys.executable, str(consumer_path), "--events", str(missing_events),
+             "--probe-evidence", str(tampered),
+             "--ledger-dir", str(tmp / "ledger_tampered")],
+            capture_output=True, text=True, timeout=60,
+        )
+        assert proc.returncode != 0, proc.stdout + proc.stderr
+        assert "tampering" in proc.stdout, proc.stdout
+        assert not (tmp / "ledger_tampered" / "claims.json").exists(), \
+            "tampered artifacts must ingest nothing"
+
+
 def test_replay_events_cli():
     """`skill-os replay-events` flows TASK_FAILED events into the ledger from
     the CLI — no manual consumer invocation. Absent stream -> exit 0
@@ -925,6 +1041,7 @@ if __name__ == "__main__":
         test_orchestrator_replan_local_fallback,
         test_route_dispatch_failure_emits_feedback_event,
         test_replay_consumer_wired,
+        test_probe_evidence_consumer_wired,
         test_replay_events_cli,
         test_vendored_consumer_parity,
     ]

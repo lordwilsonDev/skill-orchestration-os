@@ -113,16 +113,19 @@ def cmd_route(argv: list[str]) -> int:
 
 
 def cmd_replay_events(argv: list[str]) -> int:
-    """`skill-os replay-events [--events PATH] [--ledger-dir DIR]
-    [--git-head SHA] [--dry-run]`
+    """`skill-os replay-events [--events PATH] [--probe-evidence DIR]
+    [--ledger-dir DIR] [--git-head SHA] [--dry-run]`
 
-    Replays the TASK_FAILED event stream into the sovereign-verification
-    ledger as negative (CONTRADICTING) evidence. Defaults match the
-    consumer: the live stream (logs/feedback_events.jsonl) and the ledger
-    under the consumer's skill tree. Exit codes are the consumer's own:
-    0 = success (incl. nothing-to-replay), 1 = malformed stream / missing
+    Replays the TASK_FAILED event stream and/or the capability-composer
+    live-probe §8 artifacts into the sovereign-verification ledger (the
+    consumer's producer adapters). Defaults match the consumer: the live
+    stream (logs/feedback_events.jsonl), the probe dir
+    (~/capability-composer/evidence/live), and the ledger under the
+    consumer's skill tree. Exit codes are the consumer's own: 0 = success
+    (incl. nothing-to-replay), 1 = malformed stream/artifact / missing
     consumer (fail loud), 2 = bad arguments."""
     events = None
+    probe_evidence = None
     ledger_dir = None
     git_head = _default_git_head()
     dry_run = False
@@ -135,6 +138,12 @@ def cmd_replay_events(argv: list[str]) -> int:
                 print("error: --events requires a path", file=sys.stderr)
                 return 2
             events = argv[i]
+        elif a == "--probe-evidence":
+            i += 1
+            if i >= len(argv):
+                print("error: --probe-evidence requires a path", file=sys.stderr)
+                return 2
+            probe_evidence = argv[i]
         elif a == "--ledger-dir":
             i += 1
             if i >= len(argv):
@@ -176,6 +185,8 @@ def cmd_replay_events(argv: list[str]) -> int:
     consumer_args: list[str] = []
     if events:
         consumer_args += ["--events", events]
+    if probe_evidence:
+        consumer_args += ["--probe-evidence", probe_evidence]
     if ledger_dir:
         consumer_args += ["--ledger-dir", ledger_dir]
     if git_head != "unknown":
