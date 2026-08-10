@@ -14,6 +14,12 @@ name: smoke
 # only guaranteed zero-spend because the runner environment carries no paid
 # credentials (test_deepseek_plan would make a real call if DEEPSEEK_API_KEY
 # were present).
+#
+# The mutation floor leg mirrors the coverage floor in the other repos: a
+# FRESH mutmut run on the pushed code must score >= 50% (standing artifacts
+# are never trusted in CI — they'd be stale against a new HEAD). mutmut is
+# pinned to 3.7.0 so CI scores match the local runs. It is zero-spend: mutmut
+# only runs the in-repo smoke suite; no network, no keys.
 
 on:
   push:
@@ -37,3 +43,15 @@ jobs:
         run: |
           python scripts/smoke_test.py 2>&1 | tee /tmp/smoke.log
           grep -q '15/15 passed' /tmp/smoke.log
+
+      - name: Mutation floor (T5 gate — fresh mutmut run >= 50%)
+        run: |
+          set -euo pipefail
+          # Fresh measurement on the pushed code; the setup.cfg pins
+          # source_paths=runtime+cli.py, test selection=scripts/smoke_test.py,
+          # also_copy=domains.json+scripts (the dry-run test shells to cli.py
+          # from inside the mutant tree). Fail-closed: exit 1 below 50%, exit 2
+          # if mutmut never produced verdicts.
+          pip install -q 'mutmut==3.7.0' pytest pytest-cov
+          mutmut run 2>&1 | tee /tmp/mutmut.log | tail -3
+          python scripts/hygiene/mutation_score_snapshot.py --min 50
