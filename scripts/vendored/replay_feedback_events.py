@@ -10,14 +10,19 @@ producers, one ledger, one cursor:
   canonical evidence artifact, polarity CONTRADICTING, under
   ledger/evidence/negative/ — negative evidence is first-class.
 
-  PRODUCER 2 — the capability-composer live probe
-  (~/capability-composer/evidence/live/). Every probe artifact is ALREADY a
-  §8-shaped evidence object (the probe writes the canonical contract): its
-  claim_id (e.g. ghl.live.reads_work) is registered verbatim, its polarity
-  drives the verdict (SUPPORTING → VERIFIED, CONTRADICTING → REGRESSED, both
-  → CONTESTED), its content hash is VERIFIED against the artifact's own
-  artifact_hash (tamper detection — the ledger must be harder to fool than
-  the claims it evaluates), and it is stored under ledger/evidence/live/.
+  PRODUCER 2 — the capability-composer probes (live + write).
+  (~/capability-composer/evidence/live/ and .../evidence/write/). Every
+  probe artifact is ALREADY a §8-shaped evidence object (the probe writes the
+  canonical contract): its claim_id (e.g. ghl.live.reads_work for the live
+  probe, ghl.live.writes_work for the write probe) is registered verbatim,
+  its polarity drives the verdict (SUPPORTING → VERIFIED, CONTRADICTING →
+  REGRESSED, both → CONTESTED), its content hash is VERIFIED against the
+  artifact's own artifact_hash (tamper detection — the ledger must be harder
+  to fool than the claims it evaluates), and it is stored under
+  ledger/evidence/<evidence_type>/ — live probes under evidence/live/,
+  write probes under evidence/write/, never conflated. The write probe is
+  the sandbox-account round trip (create → verify → delete → verify-gone);
+  both producers share the exact same §8 contract.
 
 Deterministic verdicts (shared transition policy):
   - fresh CONTRADICTING on a previously-supported claim -> REGRESSED
@@ -37,8 +42,9 @@ Zero-spend and deterministic: stdlib-only, no LLM, no network.
 CLI:
   --events PATH       the TASK_FAILED jsonl stream (default: the canonical
                       skill-orchestration-os logs/feedback_events.jsonl)
-  --probe-evidence DIR  the live-probe §8 artifact dir (default:
-                      ~/capability-composer/evidence/live)
+  --probe-evidence DIR  a probe §8 artifact dir — live (default
+                      ~/capability-composer/evidence/live) or write
+                      (~/capability-composer/evidence/write)
   --ledger-dir DIR    ledger root (default: <skill>/ledger)
   --git-head SHA      bind the artifacts to a git identity (default: unknown)
   --dry-run           print the ingest plan, write nothing
@@ -68,7 +74,14 @@ TOOL_VERSION = "1.1"
 EVENT_TYPE = "TASK_FAILED"
 POLARITY_CONTRADICTING = "CONTRADICTING"
 POLARITY_SUPPORTING = "SUPPORTING"
-PROBE_EVIDENCE_TYPE = "live_probe"
+PROBE_EVIDENCE_TYPES = ("live_probe", "write_probe")
+# Two probe producers, one §8 contract: the live probe (read-only) and the
+# write probe (sandbox round trip). Both write the same canonical artifact
+# shape with explicit polarity; the consumer accepts BOTH — a write-probe
+# artifact is never silently discarded for not being a live-probe one.
+# Evidence mirrors the producer dirs: live probes under ledger/evidence/live/,
+# write probes under ledger/evidence/write/.
+PROBE_EVIDENCE_DIRS = {"live_probe": "live", "write_probe": "write"}
 TIER = "T3"  # real execution produced the failure — EXECUTED-level evidence
 PROBE_TIER = "T4"  # live probe = executed against the real external system — INTEGRATED-level evidence
 DEFAULT_PROBE_DIR = Path.home() / "capability-composer" / "evidence" / "live"
@@ -217,8 +230,11 @@ def _verdict_for_polarity(polarity: str, prior: Optional[dict]) -> str:
 
 def probe_identity(artifact: dict) -> str:
     """Dedupe identity for a probe artifact: its own evidence_id, namespaced
-    so it can never collide with event content-hash identities."""
-    return f"live:{artifact.get('evidence_id', '')}"
+    so it can never collide with event content-hash identities. The evidence_id
+    itself is globally unique across producers (ev_live_* vs ev_write_*), so
+    the namespace prefix only needs to be distinct from event hashes — not per
+    probe type."""
+    return f"probe:{artifact.get('evidence_id', '')}"
 
 
 def verify_probe_hash(artifact: dict) -> bool:
@@ -364,7 +380,14 @@ def _ingest_valid(events: List[dict], events_path: Path, ledger_dir: Path,
 
 def ingest_probe_evidence(probe_dir: Path, ledger_dir: Path, git_head: str,
                           dry_run: bool = False) -> Dict[str, Any]:
-    """Ingest capability-composer live-probe §8 artifacts into the ledger.
+    """Ingest capability-composer probe §8 artifacts into the ledger.
+
+    Both probe producers feed here: the live probe (evidence/live/) and the
+    write probe (evidence/write/). Each artifact is already the canonical §8
+    evidence object; the claim it declares is registered verbatim, its
+    polarity drives the verdict, and its content hash is verified before
+    ingestion. Evidence is stored under ledger/evidence/<evidence_type>/ so
+    live and write probes stay side-by-side, never conflated.
 
     An ABSENT dir is not an incident (no probe has run yet) — status
     "no_probe_evidence", no errors, exit 0 upstream. A MALFORMED or TAMPERED
@@ -388,8 +411,8 @@ def ingest_probe_evidence(probe_dir: Path, ledger_dir: Path, git_head: str,
         except (json.JSONDecodeError, OSError) as exc:
             errors.append(f"{path.name}: malformed artifact: {exc}")
             continue
-        if art.get("evidence_type") != PROBE_EVIDENCE_TYPE:
-            continue  # not a live-probe artifact — not this producer's contract
+        if art.get("evidence_type") not in PROBE_EVIDENCE_TYPES:
+            continue  # not a probe artifact — not this producer's contract
         if not verify_probe_hash(art):
             errors.append(f"{path.name}: artifact_hash mismatch — tampering detected")
             continue
@@ -415,7 +438,6 @@ def ingest_probe_evidence(probe_dir: Path, ledger_dir: Path, git_head: str,
 
     cursor_file = ledger_dir / "replay_cursor.json"
     claims_file = ledger_dir / "claims.json"
-    live_dir = ledger_dir / "evidence" / "live"
     processed = load_cursor(cursor_file)
     registry = load_registry(claims_file)
     by_id = {c.get("claim_id"): c for c in registry["claims"]}
@@ -433,8 +455,10 @@ def ingest_probe_evidence(probe_dir: Path, ledger_dir: Path, git_head: str,
         evidence_id = str(art["evidence_id"])
 
         if not dry_run:
-            live_dir.mkdir(parents=True, exist_ok=True)
-            out = live_dir / f"{evidence_id}.json"
+            kind_dir = ledger_dir / "evidence" / PROBE_EVIDENCE_DIRS.get(
+                str(art.get("evidence_type", "probe")), "probe")
+            kind_dir.mkdir(parents=True, exist_ok=True)
+            out = kind_dir / f"{evidence_id}.json"
             if not out.exists():
                 out.write_text(json.dumps(art, indent=2) + "\n", encoding="utf-8")
 
@@ -661,10 +685,10 @@ def _run_self_test() -> int:
         # ---- PRODUCER 2: live-probe §8 artifacts ----
 
         def _probe(evidence_id: str, claim_id: str, subject: str, polarity: str,
-                   ts: str) -> dict:
+                   ts: str, evidence_type: str = "live_probe") -> dict:
             art = {
                 "evidence_id": evidence_id, "subject_id": subject,
-                "claim_id": claim_id, "evidence_type": "live_probe",
+                "claim_id": claim_id, "evidence_type": evidence_type,
                 "polarity": polarity, "git_head": "deadbeef",
                 "toolchain": "capability-composer live-probe v1.0",
                 "timestamp": ts, "result": "PASS" if polarity == "SUPPORTING" else "FAIL",
@@ -771,6 +795,32 @@ def _run_self_test() -> int:
         assert not (root / "ledger_noeid" / "claims.json").exists(), \
             "missing evidence_id must ingest nothing"
 
+        # WRITE-probe artifacts (sandbox round trip) — same §8 contract, own
+        # evidence_type + claim namespace. SUPPORTING -> VERIFIED, stored
+        # under ledger/evidence/write/ — never conflated with live probes.
+        write_dir = root / "probe_write"
+        write_dir.mkdir()
+        (write_dir / "a.json").write_text(json.dumps(
+            _probe("ev_write_ghl_1", "ghl.live.writes_work",
+                   "ghl.live.write_roundtrip", "SUPPORTING",
+                   "2026-08-10T18:00:00+00:00", evidence_type="write_probe")) + "\n")
+        (write_dir / "b.json").write_text(json.dumps(
+            _probe("ev_write_ghl_2", "ghl.live.writes_work",
+                   "ghl.live.write_roundtrip", "CONTRADICTING",
+                   "2026-08-10T18:05:00+00:00", evidence_type="write_probe")) + "\n")
+        ledger_write = root / "ledger_write"
+        pw = ingest_probe_evidence(write_dir, ledger_write, "deadbeef")
+        assert pw["status"] == "ok" and pw["ingested"] == 2, pw
+        wclaims = {c["claim_id"]: c for c in
+                   load_registry(ledger_write / "claims.json")["claims"]}
+        ghlw = wclaims["ghl.live.writes_work"]
+        assert ghlw["verdict"] == "REGRESSED", ghlw  # support + fresh contradiction
+        assert ghlw["verification_tier"] == "T4", ghlw
+        assert (ledger_write / "evidence" / "write" / "ev_write_ghl_1.json").exists()
+        assert not (ledger_write / "evidence" / "live").exists(), \
+            "write evidence must never land under evidence/live/"
+        assert (ledger_write / "claims.json").exists()
+
         # Absent probe dir is NOT an incident.
         absent_p = ingest_probe_evidence(root / "no_probe_dir", root / "ledger_nop", "x")
         assert absent_p["status"] == "no_probe_evidence" and not absent_p["errors"], absent_p
@@ -781,7 +831,7 @@ def _run_self_test() -> int:
         assert not (root / "ledger_probe_dry" / "claims.json").exists(), \
             "probe dry-run must write nothing"
 
-    print("self-test: PASS (TASK_FAILED + live-probe producers: ingest, dedupe incl. same-second distinct, UNVERIFIED/VERIFIED/REGRESSED/CONTESTED verdicts, T3/T4 tiers, accumulation, tamper fail-loud, malformed fail-loud, dry-run, no-events exit 0)")
+    print("self-test: PASS (TASK_FAILED + live/write probe producers: ingest, dedupe incl. same-second distinct, UNVERIFIED/VERIFIED/REGRESSED/CONTESTED verdicts, T3/T4 tiers, evidence/live vs evidence/write isolation, accumulation, tamper fail-loud, malformed fail-loud, dry-run, no-events exit 0)")
     return 0
 
 
@@ -794,7 +844,9 @@ def main(argv: Optional[List[str]] = None) -> int:
                         default=Path.home() / ".hermes" / "skills" / "skill-orchestration-os" / "logs" / "feedback_events.jsonl",
                         help="TASK_FAILED event stream (jsonl)")
     parser.add_argument("--probe-evidence", type=Path, default=DEFAULT_PROBE_DIR,
-                        help="live-probe §8 artifact dir (default: ~/capability-composer/evidence/live)")
+                        help="probe §8 artifact dir — live (default: "
+                             "~/capability-composer/evidence/live) or write "
+                             "~/capability-composer/evidence/write")
     parser.add_argument("--ledger-dir", type=Path, default=None,
                         help="ledger root (default: <skill>/ledger)")
     parser.add_argument("--git-head", default="unknown", help="git identity to bind artifacts to")
@@ -825,7 +877,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     probe = ingest_probe_evidence(args.probe_evidence, ledger_dir, args.git_head,
                                   dry_run=args.dry_run)
     if probe["errors"]:
-        print("replay_feedback_events: FAILED (live-probe evidence)")
+        print("replay_feedback_events: FAILED (probe evidence)")
         for err in probe["errors"]:
             print(f"  error: {err}")
         failed = True

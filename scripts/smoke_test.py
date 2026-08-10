@@ -738,13 +738,16 @@ def test_replay_consumer_wired():
 
 
 def test_probe_evidence_consumer_wired():
-    """The live-probe producer adapter is wired: capability-composer §8
+    """The probe producer adapters are wired: capability-composer §8
     artifacts (already-shaped evidence with explicit polarity) flow through
     the real consumer into a temp ledger — SUPPORTING -> VERIFIED,
-    CONTRADICTING on a supported claim -> REGRESSED, both -> CONTESTED — and
-    a TAMPERED artifact (hash mismatch) makes the real CLI exit non-zero
-    with nothing ingested (the ledger must be harder to fool than the claims
-    it evaluates). Absent probe dir exits 0 (nothing probed is not an
+    CONTRADICTING on a supported claim -> REGRESSED, both -> CONTESTED, for
+    BOTH probe producers: the live probe (evidence_type live_probe) and the
+    write probe (evidence_type write_probe, sandbox round trip — its
+    evidence lands under evidence/write/, never conflated with live). A
+    TAMPERED artifact (hash mismatch) makes the real CLI exit non-zero with
+    nothing ingested (the ledger must be harder to fool than the claims it
+    evaluates). Absent probe dir exits 0 (nothing probed is not an
     incident). Hermetic and zero-spend — temp fixtures, no network, no keys.
 
     The consumer resolves through cli.CONSUMER_PATH (canonical sibling
@@ -764,10 +767,10 @@ def test_probe_evidence_consumer_wired():
     spec.loader.exec_module(consumer)
 
     def _probe(evidence_id: str, claim_id: str, subject: str, polarity: str,
-               ts: str) -> dict:
+               ts: str, evidence_type: str = "live_probe") -> dict:
         art = {
             "evidence_id": evidence_id, "subject_id": subject,
-            "claim_id": claim_id, "evidence_type": "live_probe",
+            "claim_id": claim_id, "evidence_type": evidence_type,
             "polarity": polarity, "git_head": "wired-test",
             "toolchain": "capability-composer live-probe v1.0",
             "timestamp": ts,
@@ -832,6 +835,26 @@ def test_probe_evidence_consumer_wired():
         reg3 = json.loads((ledger / "claims.json").read_text())
         claim3 = {c["claim_id"]: c for c in reg3["claims"]}["ghl.live.reads_work"]
         assert claim3["verdict"] == "CONTESTED", claim3
+
+        # WRITE-probe artifacts (sandbox round trip): same §8 contract, own
+        # evidence_type + claim namespace. SUPPORTING -> VERIFIED, stored
+        # under ledger/evidence/write/ — never conflated with live probes.
+        write_dir = tmp / "probe_write"
+        write_dir.mkdir()
+        (write_dir / "a.json").write_text(json.dumps(_probe(
+            "ev_write_w1", "ghl.live.writes_work", "ghl.live.write_roundtrip",
+            "SUPPORTING", "2026-08-10T20:25:00+00:00",
+            evidence_type="write_probe")) + "\n")
+        ledger_w = tmp / "ledger_write"
+        okw = consumer.ingest_probe_evidence(write_dir, ledger_w, "wired-test")
+        assert okw["status"] == "ok" and okw["ingested"] == 1, okw
+        regw = json.loads((ledger_w / "claims.json").read_text())
+        claimw = {c["claim_id"]: c for c in regw["claims"]}["ghl.live.writes_work"]
+        assert claimw["verdict"] == "VERIFIED", claimw
+        assert claimw["verification_tier"] == "T4", claimw
+        assert (ledger_w / "evidence" / "write" / "ev_write_w1.json").exists()
+        assert not (ledger_w / "evidence" / "live").exists(), \
+            "write evidence must never land under evidence/live/"
 
         # TAMPERED artifact through the REAL CLI: non-zero exit, nothing ingested.
         tampered = tmp / "tampered"
