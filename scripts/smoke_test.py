@@ -362,6 +362,55 @@ def test_registry_copies_in_sync():
         "registry drift: skill_id lists differ — rebuild both with --rebuild")
 
 
+def test_sovereign_verification_routable():
+    """sovereign-verification must be registered in the canonical registry with
+    a usable description, and the CLI must dry-run-dispatch it zero-spend.
+    Guards the 2026-08-10 ledger skill install: the skill lives in
+    ~/.hermes/skills and ~/.agents/skills and is dispatchable by the
+    orchestrator — this test fails loudly if it is dropped from domains.json,
+    its description is too thin for routing, or the parity copy drifts."""
+    import subprocess
+
+    from runtime.domain_router import REGISTRY_PATH
+    table = json.loads(Path(REGISTRY_PATH).read_text(encoding="utf-8"))
+    entries = [e for e in table["skills"] if e["skill_id"] == "sovereign-verification"]
+    assert entries, "sovereign-verification missing from domains.json — rebuild with --rebuild"
+    entry = entries[0]
+    assert entry["container"] == "sovereign-verification", entry
+    assert len(entry["description"]) > 40, f"description too thin: {entry['description']!r}"
+    # On-disk + parity legs require the LOCAL hermes skill tree.
+    if not Path(entry["skill_md"]).exists():
+        raise _Skip(
+            "hermes skill tree not present in this checkout — on-disk/parity "
+            "legs run locally where ~/.hermes/skills/sovereign-verification exists")
+    # Parity: hermes copy must not drift from the canonical ~/.agents/skills.
+    agents_orig = Path.home() / ".agents" / "skills" / "sovereign-verification" / "SKILL.md"
+    if agents_orig.exists():
+        hermes = Path(entry["skill_md"]).read_text(encoding="utf-8")
+        orig = agents_orig.read_text(encoding="utf-8")
+        import re as _re
+
+        def _fm_field(text: str, key: str) -> str:
+            m = _re.search(rf"^{key}:\s*(.+)$", text, _re.MULTILINE)
+            return m.group(1).strip().strip('"').strip() if m else ""
+
+        for key in ("name", "description"):
+            h, o = _fm_field(hermes, key), _fm_field(orig, key)
+            assert h == o, (
+                f"sovereign-verification drift: hermes {key!r} differs from "
+                f"~/.agents/skills original — re-copy the skill or rebuild")
+    # Zero-spend dispatch proof: dry-run through the real CLI.
+    proc = subprocess.run(
+        [sys.executable, "cli.py", "route", "--domain", "sovereign-verification",
+         "--dry-run", "check the verification ledger before running the factory gate"],
+        cwd=str(Path(__file__).resolve().parent.parent),
+        capture_output=True, text=True, timeout=60,
+    )
+    assert proc.returncode == 0, proc.stderr
+    assert "sovereign-verification" in proc.stdout
+    assert "dispatched:" not in proc.stdout  # dry-run must not execute
+
+
 class _Skip(Exception):
     """Raised by a test whose environment-dependent legs are inapplicable in
     the current checkout (e.g. sibling trees CI doesn't clone). The runner
@@ -388,6 +437,7 @@ if __name__ == "__main__":
         test_route_stubbed_dispatch,
         test_vault_check_first_routable,
         test_registry_copies_in_sync,
+        test_sovereign_verification_routable,
     ]
     passed = 0
     skipped = 0

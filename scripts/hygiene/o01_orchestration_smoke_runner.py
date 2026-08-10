@@ -2,7 +2,7 @@
 """o01_orchestration_smoke_runner.py — the OS's own smoke suite as a hygiene leg.
 
 skill-orchestration-os IS the orchestration runtime, so this runner re-runs
-its own regression suite (scripts/smoke_test.py, 15 tests) through the
+its own regression suite (scripts/smoke_test.py, 16 tests) through the
 hygiene index — the same suite the repo's factory gate runs via pytest_target,
 kept consistent so the two entry points can't drift. Covers registry,
 planner (route-aware prompt + wrapped-step normalization), executor (route
@@ -83,11 +83,11 @@ def main() -> int:
             "input": f"orchestration-os scripts/smoke_test.py ({SMOKE})",
             "environment": f"skill-orchestration-os repo @ {REPO}",
             "failure_injected": "none — full OS smoke suite is the regression probe",
-            "expected_behavior": "all 15 OS smoke tests pass (registry, planner incl. route, executor incl. route skill, audit, meta-learner, CLI dry-run, stubbed dispatch)",
+            "expected_behavior": "all 16 OS smoke tests pass (registry, planner incl. route, executor incl. route skill, audit, meta-learner, CLI dry-run, stubbed dispatch)",
             "actual_behavior": f"smoke_test.py not found: {SMOKE}",
             "latency_ms": 0,
             "errors": [f"missing {SMOKE} — orchestration-os smoke suite not present"],
-            "state_before": {"repo": str(REPO), "smoke_tests": 15},
+            "state_before": {"repo": str(REPO), "smoke_tests": 16},
             "state_after": {"passed": False, "reason": "blocked"},
             "recovery": "restore scripts/smoke_test.py in the skill-orchestration-os checkout",
             "false_repair": False,
@@ -110,7 +110,7 @@ def main() -> int:
 
     combined = (proc.stdout or "") + "\n" + (proc.stderr or "")
     passed = proc.returncode == 0
-    # Evidence line: the smoke suite's "N/15 passed" footer.
+    # Evidence line: the smoke suite's "N/16 passed" footer.
     evidence = [line.strip() for line in combined.splitlines() if re.search(r"\d+/\d+ passed", line)]
     summary = evidence[-1] if evidence else f"smoke exit {proc.returncode}"
 
@@ -119,14 +119,14 @@ def main() -> int:
         "experiment_id": "o01_orchestration_smoke",
         "artifact": str(out),
         "skill": "regression-hygiene",
-        "input": "orchestration-os scripts/smoke_test.py (15 tests: registry, planner incl. route, executor incl. route skill, audit, meta-learner, CLI dry-run, stubbed dispatch)",
+        "input": "orchestration-os scripts/smoke_test.py (16 tests: registry, planner incl. route, executor incl. route skill, audit, meta-learner, CLI dry-run, stubbed dispatch)",
         "environment": f"skill-orchestration-os repo @ {REPO}",
         "failure_injected": "none — full OS smoke suite is the regression probe",
-        "expected_behavior": "all 15 OS smoke tests pass (0-spend; uses --domain + dry-run only)",
+        "expected_behavior": "all 16 OS smoke tests pass (0-spend; uses --domain + dry-run only)",
         "actual_behavior": f"exit={proc.returncode} {summary}",
         "latency_ms": latency_ms,
         "errors": [] if passed else [(proc.stderr or "")[-300:]],
-        "state_before": {"repo": str(REPO), "smoke_tests": 15, "zero_spend": True, "env_scrubbed": list(ZERO_SPEND_ENV_VARS)},
+        "state_before": {"repo": str(REPO), "smoke_tests": 16, "zero_spend": True, "env_scrubbed": list(ZERO_SPEND_ENV_VARS)},
         "state_after": {"exit": proc.returncode, "passed": passed, "summary": summary},
         "recovery": "n/a — read-only verification",
         "false_repair": False,
