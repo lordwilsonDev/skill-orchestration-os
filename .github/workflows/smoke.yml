@@ -50,10 +50,10 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Smoke suite (run once, assert 27/27)
+      - name: Smoke suite (run once, assert 28/28)
         run: |
           python scripts/smoke_test.py 2>&1 | tee /tmp/smoke.log
-          grep -q '27/27 passed' /tmp/smoke.log
+          grep -q '28/28 passed' /tmp/smoke.log
 
       - name: Mutation floor (T5 gate — fresh mutmut run >= 50%)
         run: |
