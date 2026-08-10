@@ -465,7 +465,11 @@ def main(argv: Optional[List[str]] = None) -> int:
             print(f"  error: {err}")
         return 1
     if summary["status"] == "no_events":
-        print(f"replay_feedback_events: no event stream at {args.events} (nothing to replay)")
+        # The absent-stream branch must still honor --dry-run: a caller (or
+        # gate leg) that dry-runs before the first failure exists must see the
+        # marker, not a bare "nothing to replay" — the smoke leg asserts it.
+        print(f"replay_feedback_events: no event stream at {args.events} (nothing to replay)"
+              + (" [dry-run — nothing written]" if args.dry_run else ""))
         return 0
     print(f"replay_feedback_events: {summary['ingested']} ingested, {summary['skipped']} already-replayed "
           f"of {summary['events']} events; claims in registry: {summary['claims']}"
