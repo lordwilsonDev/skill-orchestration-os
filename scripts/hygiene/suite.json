@@ -1,0 +1,11 @@
+{
+  "experiments": {
+    "o01_orchestration_smoke": {
+      "skill": "regression-hygiene",
+      "runner": "o01_orchestration_smoke_runner.py"
+    }
+  },
+  "live_auth": false,
+  "pytest_target": "scripts/smoke_test.py",
+  "note": "skill-orchestration-os is a CLI runtime with no server/daemon, so the factory's live-auth probe is scoped out (not an unresolved unknown). pytest_target points at the repo's own smoke suite (scripts/smoke_test.py, 15 tests: registry, planner incl. route-aware prompt + wrapped-step normalization, executor incl. the route DAG step + unknown-domain rejection, audit, omni-route, meta-learner, DeepSeek-plan fallback, route CLI dry-run, stubbed real-subprocess dispatch, vault-check-first routability, registry copies in sync) because this repo keeps its tests in scripts/ rather than tests/. o01 re-runs the same suite through a hygiene runner so it is also covered by the aggregating hygiene_runner index, with the subprocess env scrubbed of paid-API keys (zero-spend)."
+}

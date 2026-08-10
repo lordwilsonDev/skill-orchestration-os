@@ -1,0 +1,22 @@
+{
+  "timestamp": "2026-08-10T07:11:39.788901+00:00",
+  "environment": {
+    "repo": "/Users/lordwilson/.hermes/skills/skill-orchestration-os",
+    "python": "/opt/homebrew/Caskroom/miniforge/base/bin/python",
+    "experiments": 1
+  },
+  "results": [
+    {
+      "experiment": "o01_orchestration_smoke",
+      "verdict": "pass",
+      "artifact": "/Users/lordwilson/.hermes/skills/skill-orchestration-os/artifacts/hygiene/o01_orchestration_smoke_20260810T071139Z.json",
+      "returncode": 0
+    }
+  ],
+  "factory_verdict": "pass",
+  "factory_gate": {
+    "any_fail": false,
+    "any_unknown": false,
+    "all_pass": true
+  }
+}

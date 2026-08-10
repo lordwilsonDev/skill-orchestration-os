@@ -1,0 +1,86 @@
+{
+  "PROJECT_MAP": {
+    "project_id": "d1d1c5cc4863",
+    "name": "skill-orchestration-os",
+    "root": "/Users/lordwilson/.hermes/skills/skill-orchestration-os",
+    "discovered_at": "2026-08-10T07:11:37.815745+00:00"
+  },
+  "BASELINE": {
+    "project": {
+      "project_id": "d1d1c5cc4863",
+      "name": "skill-orchestration-os",
+      "root": "/Users/lordwilson/.hermes/skills/skill-orchestration-os",
+      "discovered_at": "2026-08-10T07:11:37.815745+00:00"
+    },
+    "tests": "n/a",
+    "git": "n/a",
+    "dependencies": "n/a",
+    "claims": []
+  },
+  "VERIFICATION": {
+    "pytest": {
+      "passed": true,
+      "summary": "15 passed, 2 warnings in 0.56s",
+      "duration_s": 1
+    },
+    "coverage": {
+      "configured": false,
+      "source": null,
+      "floor_pct": 0.0,
+      "pct": null,
+      "met": null
+    },
+    "live_auth": {
+      "verified": null,
+      "detail": "scoped out \u2014 project declares live_auth:false in suite.json",
+      "correct_secret": null,
+      "wrong_secret": null,
+      "missing_secret": null
+    },
+    "git_head": "fb8a771e2daa3a932b9103a4ef76bc9447943d0c"
+  },
+  "SUITE_CONFIG": {
+    "source": "<project>/scripts/hygiene/suite.json",
+    "experiments": [
+      "o01_orchestration_smoke"
+    ],
+    "live_auth": false,
+    "pytest_target": "scripts/smoke_test.py"
+  },
+  "EVIDENCE_INDEX": {
+    "claims_verified": 1,
+    "artifacts": [
+      "/Users/lordwilson/.hermes/skills/skill-orchestration-os/artifacts/hygiene/o01_orchestration_smoke_20260810T071139Z.json"
+    ],
+    "verified_at": "2026-08-10T07:11:39.810630+00:00",
+    "member_results": [
+      {
+        "experiment": "o01_orchestration_smoke",
+        "skill": "regression-hygiene",
+        "verdict": "pass",
+        "artifact": "/Users/lordwilson/.hermes/skills/skill-orchestration-os/artifacts/hygiene/o01_orchestration_smoke_20260810T071139Z.json",
+        "violations": []
+      }
+    ]
+  },
+  "RELEASE_VERDICT": {
+    "critical_requirements_tested": true,
+    "critical_invariants_verified": false,
+    "critical_failures_resolved": true,
+    "security_boundaries_tested": false,
+    "state_recovery_tested": false,
+    "important_failure_modes_have_experiments": true,
+    "claims_have_evidence": true,
+    "regression_passed": true,
+    "reproducibility_documented": true,
+    "live_auth_verified": false,
+    "unresolved_unknowns_disclosed": true,
+    "release_verdict": "PASS",
+    "unresolved_unknowns": [],
+    "coverage_floor_met": null,
+    "notes": [
+      "live_auth scoped out: project suite.json declares live_auth:false (no server to probe)"
+    ],
+    "artifact_schema_violations": 0
+  }
+}
