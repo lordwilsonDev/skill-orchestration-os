@@ -46,7 +46,7 @@ def _default_git_head() -> str:
         )
         head = proc.stdout.strip()
         return head if proc.returncode == 0 and head else "unknown"
-    except Exception:
+    except (subprocess.SubprocessError, OSError):
         return "unknown"
 
 
@@ -157,9 +157,14 @@ def cmd_replay_events(argv: list[str]) -> int:
 
     import importlib.util
 
-    spec = importlib.util.spec_from_file_location("replay_feedback_events", CONSUMER_PATH)
-    consumer = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(consumer)
+    try:
+        spec = importlib.util.spec_from_file_location("replay_feedback_events", CONSUMER_PATH)
+        consumer = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(consumer)
+    except Exception as e:
+        # A broken consumer must fail clean and loud, not dump a traceback.
+        print(f"error: failed to load replay consumer: {e}", file=sys.stderr)
+        return 1
 
     consumer_args: list[str] = []
     if events:

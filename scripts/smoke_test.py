@@ -782,6 +782,13 @@ def test_replay_events_cli():
         assert p0.returncode == 0, p0.stdout + p0.stderr
         assert "nothing to replay" in p0.stdout, p0.stdout
 
+        # The core promise — bare `skill-os replay-events` (no args) wires the
+        # live stream + consumer default ledger. --dry-run makes it hermetic:
+        # reads the live stream, writes nothing, exits 0.
+        p0b = run("--dry-run")
+        assert p0b.returncode == 0, p0b.stdout + p0b.stderr
+        assert "[dry-run" in p0b.stdout, p0b.stdout
+
         # Malformed stream: non-zero exit, nothing ingested.
         p1 = run("--events", str(bad), "--ledger-dir", str(tmp / "ledger1"))
         assert p1.returncode != 0, p1.stdout + p1.stderr
@@ -818,6 +825,17 @@ def test_replay_events_cli():
         cli.CONSUMER_PATH = tmp / "no-such-consumer.py"
         try:
             rc = cli.cmd_replay_events(["--events", str(events), "--ledger-dir", str(tmp / "ledger2")])
+            assert rc != 0, rc
+        finally:
+            cli.CONSUMER_PATH = saved
+
+        # A BROKEN consumer (syntax error) must also fail clean and loud — a
+        # raw traceback would be the ledger discipline's fail-loud violation.
+        broken = tmp / "broken_consumer.py"
+        broken.write_text("def main(argv=None):\n    this is not valid python\n")
+        cli.CONSUMER_PATH = broken
+        try:
+            rc = cli.cmd_replay_events(["--events", str(events), "--ledger-dir", str(tmp / "ledger3")])
             assert rc != 0, rc
         finally:
             cli.CONSUMER_PATH = saved
